@@ -37,6 +37,10 @@ def test_upsert_paper_stubs_dedupes(mocker):
 
 
 def test_apply_enrichment_builds_edges_and_stubs(mocker):
+    """
+    Verifies that apply_enrichment() correctly processes citation data from
+    Semantic Scholar and calls the database write function with the right params
+    """
     mock_run_write = mocker.patch.object(upsert, "run_write")
     result = EnrichmentResult(
         arxiv_id="2101.00001",
@@ -53,13 +57,16 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
     edge_call = next(c for c in calls if "edges" in c.kwargs)
     enrichment_call = next(c for c in calls if "results" in c.kwargs)
 
+    # Check that stubs are created for both papers "2001.00001" and "s2-2"
     stub_ids = {s["id"] for s in stub_call.kwargs["stubs"]}
     assert stub_ids == {"2001.00001", "s2:s2-2"}
 
+    # Check that edges exist: 2101 -> 2001 and s2-2 -> 2101
     edges = {(e["citing_id"], e["cited_id"]) for e in edge_call.kwargs["edges"]}
     assert ("2101.00001", "2001.00001") in edges
     assert ("s2:s2-2", "2101.00001") in edges
 
+    # Check that enrichment data (citation count = 3) is persisted
     assert enrichment_call.kwargs["results"][0]["citation_count"] == 3
 
 

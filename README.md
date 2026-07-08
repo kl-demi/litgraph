@@ -28,6 +28,11 @@ Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).
 ## Usage
 
 ```bash
+# --- Step 1: Start up container
+docker compose up -d
+
+# --- Step 2: Choose any of the following:
+
 # Backload a subset of the Kaggle arxiv-metadata-oai-snapshot.json(.gz)
 # (download separately via `kaggle datasets download -d Cornell-University/arxiv`)
 uv run arxiv-graphdb backload --file /path/to/arxiv-metadata-oai-snapshot.json \

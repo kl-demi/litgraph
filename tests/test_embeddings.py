@@ -26,3 +26,9 @@ def test_embed_texts_empty_input_short_circuits():
 def test_paper_embedding_text_joins_title_and_abstract():
     text = embeddings.paper_embedding_text("  Title  ", "  Abstract text  ")
     assert text == "Title\nAbstract text"
+
+# def test_embed_texts():
+#     embeddings._get_model.cache_clear()
+#     vector1 = embeddings.embed_texts(["", ""])
+#     vector2 = embeddings.embed_texts(["", ""])
+#     assert vector1 == vector2
