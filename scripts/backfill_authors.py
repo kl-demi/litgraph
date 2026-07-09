@@ -2,13 +2,17 @@
 bug (see graph/upsert.py). Re-fetches each arxiv-sourced paper by ID from the arXiv
 API and re-runs the (now fixed) upsert, which repopulates authors, published_date,
 etc. without touching anything else. Safe to re-run — upsert_papers is idempotent.
+
+Goes through _embed_and_upsert (not upsert_papers directly): the freshly re-fetched
+Paper objects have embedding=None, and upsert_papers unconditionally SETs whatever
+embedding it's given — calling it directly would silently wipe existing embeddings.
 """
 
 import arxiv
 
 from litgraph.db.neo4j_client import chunked, run_read
-from litgraph.graph.upsert import upsert_papers
 from litgraph.ingest.arxiv_source import _result_to_paper
+from litgraph.ingest.pipeline import _embed_and_upsert
 
 _MISSING_AUTHORS = """
 MATCH (p:Paper)
@@ -26,7 +30,7 @@ def main() -> None:
     for batch in chunked(arxiv_ids, 50):
         search = arxiv.Search(id_list=batch)
         papers = [_result_to_paper(result) for result in client.results(search)]
-        upsert_papers(papers)
+        _embed_and_upsert(papers)
         total += len(papers)
         print(f"  backfilled {total}/{len(arxiv_ids)}")
 
