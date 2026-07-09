@@ -1,18 +1,15 @@
-name: litgraph-neo4j
+name: litgraph
 
 services:
-  neo4j:
-    image: neo4j:5-community
+  arcadedb:
+    image: arcadedata/arcadedb:latest
     ports:
-      - "7474:7474" # browser UI
-      - "7687:7687" # bolt
+      - "2480:2480" # HTTP API / Studio
+      - "7688:7687" # bolt (Neo4j service already claims host port 7687)
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-changeme123}
-      - NEO4J_server_memory_heap_max__size=2G
+      - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-changeme123} -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - arcadedb_data:/home/arcadedb/databases
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
+  arcadedb_data:
