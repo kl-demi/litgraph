@@ -1,13 +1,12 @@
 # litgraph
 
 Academic paper ingestion & search backed by ArcadeDB: keyword search, semantic (vector)
-search, and citation graph traversal in one database. Currently ingests from arXiv, with
-more sources (e.g. PubMed) planned. Neo4j is also supported as an alternative backend —
-see "Alternative: Neo4j backend" below.
+search, and citation graph traversal. Currently ingests from arXiv, with
+more sources (e.g. PubMed) planned.
 
 - **Storage**: ArcadeDB (self-hosted, Apache-2.0) by default. A vector index handles
   semantic search, a full-text index handles keyword search, and the graph itself models
-  the citation network — no separate vector DB or search engine.
+  the citation network.
 - **Embeddings**: `sentence-transformers/allenai-specter` (768-dim), run locally — no
   external embedding API/cost.
 - **Ingestion**: historical backload from the Kaggle arXiv metadata snapshot, daily
@@ -25,7 +24,7 @@ docker compose -f docker-compose.arcadedb.yml up -d
 uv run litgraph init-db
 ```
 
-ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
+<!-- ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`). -->
 
 ## Usage
 
@@ -54,7 +53,7 @@ uv run litgraph search semantic "generative models for images"
 uv run litgraph citations 1706.03762 --direction both --depth 2
 ```
 
-## Alternative: Neo4j backend
+<!-- ## Alternative: Neo4j backend
 
 Neo4j also works as a backend, toggled via `GRAPH_BACKEND`. Most of this codebase is
 backend-agnostic Cypher that runs unmodified against either engine — only vector search,
@@ -82,7 +81,7 @@ uv run litgraph init-db
 
 Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).
 Everything else — `backload`, `enrich`, `fetch-daily`, `search keyword`, `search semantic`,
-`citations` — works the same regardless of backend.
+`citations` — works the same regardless of backend. -->
 
 ## Graph schema
 
