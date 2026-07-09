@@ -20,16 +20,28 @@ SET paper.arxiv_id = p.arxiv_id,
     paper.embedding = p.embedding,
     paper.fetched_at = p.fetched_at,
     paper.embedded_at = p.embedded_at
-WITH paper, p
-FOREACH (cat IN p.categories |
-    MERGE (c:Category {code: cat})
-    MERGE (paper)-[:IN_CATEGORY]->(c)
-)
-WITH paper, p
-FOREACH (authorName IN p.authors |
-    MERGE (a:Author {name: authorName})
-    MERGE (a)-[:AUTHORED]->(paper)
-)
+"""
+
+# Separate top-level UNWIND $papers per relationship type, rather than nesting a
+# FOREACH inside the paper-upsert query: ArcadeDB's Bolt/Cypher layer doesn't honor
+# MERGE's match-or-create semantics for a pattern variable bound inside a FOREACH —
+# `MERGE (a:Author {name: x}) MERGE (a)-[:AUTHORED]->(paper)` inside FOREACH always
+# creates a fresh blank vertex for `a` instead of reusing the matched/created Author,
+# so edges ended up pointing at untyped, propertyless orphan vertices.
+_UPSERT_CATEGORIES = """
+UNWIND $papers AS p
+UNWIND p.categories AS cat
+MATCH (paper:Paper {id: p.id})
+MERGE (c:Category {code: cat})
+MERGE (paper)-[:IN_CATEGORY]->(c)
+"""
+
+_UPSERT_AUTHORS = """
+UNWIND $papers AS p
+UNWIND p.authors AS authorName
+MATCH (paper:Paper {id: p.id})
+MERGE (a:Author {name: authorName})
+MERGE (a)-[:AUTHORED]->(paper)
 """
 
 _UPSERT_STUBS = """
@@ -84,7 +96,10 @@ def _paper_params(paper: Paper) -> dict:
 def upsert_papers(papers: list[Paper]) -> None:
     if not papers:
         return
-    run_write(_UPSERT_PAPERS, papers=[_paper_params(p) for p in papers])
+    params = [_paper_params(p) for p in papers]
+    run_write(_UPSERT_PAPERS, papers=params)
+    run_write(_UPSERT_CATEGORIES, papers=params)
+    run_write(_UPSERT_AUTHORS, papers=params)
 
 
 def upsert_paper_stubs(stubs: list[CitationStub]) -> None:

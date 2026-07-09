@@ -8,11 +8,16 @@ def test_upsert_papers_builds_expected_params(mocker):
 
     upsert.upsert_papers([paper])
 
-    query, kwargs = mock_run_write.call_args.args[0], mock_run_write.call_args.kwargs
-    assert "MERGE (paper:Paper {id: p.id})" in query
-    papers_param = kwargs["papers"]
-    assert papers_param[0]["id"] == "2101.00001"
-    assert papers_param[0]["authors"] == ["Jane Doe"]
+    calls = mock_run_write.call_args_list
+    assert len(calls) == 3
+    paper_query, category_query, author_query = (c.args[0] for c in calls)
+    assert "MERGE (paper:Paper {id: p.id})" in paper_query
+    assert "MERGE (c:Category {code: cat})" in category_query
+    assert "MERGE (a:Author {name: authorName})" in author_query
+    for call in calls:
+        papers_param = call.kwargs["papers"]
+        assert papers_param[0]["id"] == "2101.00001"
+        assert papers_param[0]["authors"] == ["Jane Doe"]
 
 
 def test_upsert_papers_noop_on_empty(mocker):

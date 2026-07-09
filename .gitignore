@@ -10,3 +10,4 @@ data/
 .DS_Store
 
 .claude/
+inspect_db.sql
