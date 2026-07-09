@@ -2,8 +2,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-from litgraph.db.neo4j_client import run_read
+from litgraph.config import get_settings
+from litgraph.db.neo4j_client import chunked, run_read
 from litgraph.graph.upsert import apply_enrichment, upsert_papers
 from litgraph.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_checkpoint
 from litgraph.ingest.embeddings import embed_texts, paper_embedding_text
@@ -12,6 +14,15 @@ from litgraph.ingest.semantic_scholar import SemanticScholarClient
 from litgraph.models import Paper
 
 console = Console()
+
+
+def _progress(*, determinate: bool = True) -> Progress:
+    columns = [SpinnerColumn(), TextColumn("[progress.description]{task.description}")]
+    if determinate:
+        columns.append(BarColumn())
+    columns += [MofNCompleteColumn(), TimeElapsedColumn()]
+    return Progress(*columns, console=console)
+
 
 _FIND_UNENRICHED = """
 MATCH (p:Paper)
@@ -69,21 +80,25 @@ def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
     total = 0
     newest_seen: datetime | None = None
 
-    for paper in fetch_new_papers(categories, since=since):
-        batch.append(paper)
-        published = paper.published_date
-        if published is not None:
-            published_dt = datetime.combine(published, datetime.min.time())
-            if newest_seen is None or published_dt > newest_seen:
-                newest_seen = published_dt
-        if len(batch) >= batch_size:
+    with _progress(determinate=False) as progress:
+        task = progress.add_task("Fetching new papers", total=None)
+        for paper in fetch_new_papers(categories, since=since):
+            batch.append(paper)
+            published = paper.published_date
+            if published is not None:
+                published_dt = datetime.combine(published, datetime.min.time())
+                if newest_seen is None or published_dt > newest_seen:
+                    newest_seen = published_dt
+            if len(batch) >= batch_size:
+                _embed_and_upsert(batch)
+                total += len(batch)
+                progress.update(task, completed=total)
+                batch = []
+
+        if batch:
             _embed_and_upsert(batch)
             total += len(batch)
-            batch = []
-
-    if batch:
-        _embed_and_upsert(batch)
-        total += len(batch)
+            progress.update(task, completed=total)
 
     if newest_seen is not None:
         set_checkpoint(newest_seen)
@@ -99,9 +114,19 @@ def run_enrichment(limit: int = 500) -> int:
         console.log("enrich: nothing to do")
         return 0
 
-    with SemanticScholarClient() as client:
-        results = client.enrich(arxiv_ids)
+    batch_size = get_settings().semantic_scholar_batch_size
+    enriched_total = 0
+    with SemanticScholarClient() as client, _progress() as progress:
+        task = progress.add_task("Enriching papers", total=len(arxiv_ids))
+        for batch in chunked(arxiv_ids, batch_size):
+            results = client.enrich(batch)
+            apply_enrichment(results)
+            enriched_total += len(results)
+            progress.update(task, advance=len(batch))
 
-    apply_enrichment(results)
-    console.log(f"enrich: enriched {len(results)}/{len(arxiv_ids)} papers")
-    return len(results)
+    skipped = len(arxiv_ids) - enriched_total
+    console.log(
+        f"enrich: enriched {enriched_total}/{len(arxiv_ids)} papers"
+        + (f" ({skipped} not found in Semantic Scholar)" if skipped else "")
+    )
+    return enriched_total

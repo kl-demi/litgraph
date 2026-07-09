@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from litgraph.config import get_settings
@@ -162,6 +163,37 @@ def stats_top_authors(n: int = typer.Option(10, "--n", help="Number of authors t
     from litgraph.search.stats import top_authors
 
     _print_results(top_authors(limit=n))
+
+
+@stats_app.command("overview")
+def stats_overview() -> None:
+    """A snapshot of what's in the graph: counts, enrichment coverage, date range."""
+    from litgraph.search.stats import overview
+
+    data = overview()
+
+    def pct(part: int, whole: int) -> str:
+        return f"{part} ({part / whole:.0%})" if whole else str(part)
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("Papers", str(data["papers"]))
+    table.add_row("   enriched (citation data)", pct(data["enriched"], data["papers"]))
+    table.add_row("   embedded (semantic search)", pct(data["embedded"], data["papers"]))
+    table.add_row("Citation-graph stub papers", str(data["stubs"]))
+    table.add_row("Authors", str(data["authors"]))
+    table.add_row("Categories", str(data["categories"]))
+    if data["top_category"]:
+        table.add_row("   most common", f"{data['top_category']['code']} ({data['top_category']['paper_count']} papers)")
+    table.add_row("Edges")
+    table.add_row("   authored", str(data["authored_edges"]))
+    table.add_row("   in_category", str(data["category_edges"]))
+    table.add_row("   cites", str(data["citation_edges"]))
+    if data["earliest_published"] and data["latest_published"]:
+        table.add_row("Published date range", f"{data['earliest_published']} → {data['latest_published']}")
+
+    console.print(Panel(table, title="litgraph snapshot", expand=False))
 
 
 
