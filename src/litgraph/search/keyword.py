@@ -1,6 +1,6 @@
-from arxiv_graphdb.config import get_settings
-from arxiv_graphdb.db import arcadedb_http
-from arxiv_graphdb.db.neo4j_client import run_read
+from litgraph.config import get_settings
+from litgraph.db import arcadedb_http
+from litgraph.db.neo4j_client import run_read
 
 _KEYWORD_QUERY = """
 CALL db.index.fulltext.queryNodes('paper_fulltext', $search_text) YIELD node, score

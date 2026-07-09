@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 
 import arxiv
 
-from arxiv_graphdb.db.neo4j_client import run_read, run_write
-from arxiv_graphdb.models import Paper
+from litgraph.db.neo4j_client import run_read, run_write
+from litgraph.models import Paper
 
 _VERSION_SUFFIX = re.compile(r"v\d+$")
 

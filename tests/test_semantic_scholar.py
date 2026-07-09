@@ -1,6 +1,6 @@
 import httpx
 
-from arxiv_graphdb.ingest.semantic_scholar import SemanticScholarClient
+from litgraph.ingest.semantic_scholar import SemanticScholarClient
 
 
 class FakeResponse:

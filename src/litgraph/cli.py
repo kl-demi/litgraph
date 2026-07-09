@@ -4,11 +4,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from arxiv_graphdb.config import get_settings
-from arxiv_graphdb.db.schema import ensure_schema
-from arxiv_graphdb.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
+from litgraph.config import get_settings
+from litgraph.db.schema import ensure_schema
+from litgraph.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
 
-app = typer.Typer(help="arXiv paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
+app = typer.Typer(help="Academic paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
 search_app = typer.Typer(help="Query the graph.")
 app.add_typer(search_app, name="search")
 
@@ -80,14 +80,14 @@ def enrich(
 
 @search_app.command("keyword")
 def search_keyword(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
-    from arxiv_graphdb.search.keyword import keyword_search
+    from litgraph.search.keyword import keyword_search
 
     _print_results(keyword_search(query, top_k=top_k))
 
 
 @search_app.command("semantic")
 def search_semantic(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
-    from arxiv_graphdb.search.semantic import semantic_search
+    from litgraph.search.semantic import semantic_search
 
     _print_results(semantic_search(query, top_k=top_k))
 
@@ -99,7 +99,7 @@ def citations(
     depth: int = typer.Option(1, "--depth", help="Hops for neighborhood traversal (1-3)"),
 ) -> None:
     """Show citation graph around a paper."""
-    from arxiv_graphdb.search.citations import citation_neighborhood, get_citing_papers, get_references
+    from litgraph.search.citations import citation_neighborhood, get_citing_papers, get_references
 
     if direction in ("cites", "both"):
         console.print(f"[bold]Papers {arxiv_id} cites:[/bold]")

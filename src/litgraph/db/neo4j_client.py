@@ -4,7 +4,7 @@ from typing import Any
 
 from neo4j import Driver, GraphDatabase
 
-from arxiv_graphdb.config import get_settings
+from litgraph.config import get_settings
 
 
 @lru_cache

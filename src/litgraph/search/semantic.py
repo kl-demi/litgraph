@@ -1,7 +1,7 @@
-from arxiv_graphdb.config import get_settings
-from arxiv_graphdb.db import arcadedb_http
-from arxiv_graphdb.db.neo4j_client import run_read
-from arxiv_graphdb.ingest.embeddings import embed_texts
+from litgraph.config import get_settings
+from litgraph.db import arcadedb_http
+from litgraph.db.neo4j_client import run_read
+from litgraph.ingest.embeddings import embed_texts
 
 _VECTOR_QUERY = """
 CALL db.index.vector.queryNodes('paper_embedding', $top_k, $vector) YIELD node, score

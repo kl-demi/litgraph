@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from arxiv_graphdb.models import CitationStub, Paper
+from litgraph.models import CitationStub, Paper
 
 
 def test_paper_id_prefers_arxiv_id():

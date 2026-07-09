@@ -1,3 +1,5 @@
+name: litgraph
+
 services:
   arcadedb:
     image: arcadedata/arcadedb:latest

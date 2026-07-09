@@ -1,4 +1,4 @@
-from arxiv_graphdb.db.neo4j_client import run_read
+from litgraph.db.neo4j_client import run_read
 
 _REFERENCES = """
 MATCH (p:Paper {arxiv_id: $arxiv_id})-[:CITES]->(cited)

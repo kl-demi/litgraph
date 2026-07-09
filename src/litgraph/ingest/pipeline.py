@@ -3,13 +3,13 @@ from pathlib import Path
 
 from rich.console import Console
 
-from arxiv_graphdb.db.neo4j_client import run_read
-from arxiv_graphdb.graph.upsert import apply_enrichment, upsert_papers
-from arxiv_graphdb.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_checkpoint
-from arxiv_graphdb.ingest.embeddings import embed_texts, paper_embedding_text
-from arxiv_graphdb.ingest.kaggle_source import iter_kaggle_papers
-from arxiv_graphdb.ingest.semantic_scholar import SemanticScholarClient
-from arxiv_graphdb.models import Paper
+from litgraph.db.neo4j_client import run_read
+from litgraph.graph.upsert import apply_enrichment, upsert_papers
+from litgraph.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_checkpoint
+from litgraph.ingest.embeddings import embed_texts, paper_embedding_text
+from litgraph.ingest.kaggle_source import iter_kaggle_papers
+from litgraph.ingest.semantic_scholar import SemanticScholarClient
+from litgraph.models import Paper
 
 console = Console()
 

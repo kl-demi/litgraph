@@ -51,48 +51,6 @@ wheels = [
 ]
 
 [[package]]
-name = "arxiv-graphdb"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "arxiv" },
-    { name = "httpx" },
-    { name = "kaggle" },
-    { name = "neo4j" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-dateutil" },
-    { name = "rich" },
-    { name = "sentence-transformers" },
-    { name = "tenacity" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "arxiv", specifier = ">=4.0" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "kaggle", specifier = ">=1.6" },
-    { name = "neo4j", specifier = ">=5.24" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14" },
-    { name = "python-dateutil", specifier = ">=2.9" },
-    { name = "rich", specifier = ">=13.8" },
-    { name = "sentence-transformers", specifier = ">=3.1" },
-    { name = "tenacity", specifier = ">=9.0" },
-    { name = "typer", specifier = ">=0.12" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "attrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -530,6 +488,48 @@ sdist = { url = "https://files.pythonhosted.org/packages/de/36/7d5cbafe4057496a9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/f0/82256cc8a89e06ef3eba149ec0626f77468dffb896dfa80fbcc700341246/kagglesdk-0.1.33-py3-none-any.whl", hash = "sha256:4906c6cd829c592265f8eacc5599bcd594641589ba4ea93ef17b98498d6c90b6", size = 243756, upload-time = "2026-07-01T18:58:55.4Z" },
 ]
+
+[[package]]
+name = "litgraph"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "arxiv" },
+    { name = "httpx" },
+    { name = "kaggle" },
+    { name = "neo4j" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dateutil" },
+    { name = "rich" },
+    { name = "sentence-transformers" },
+    { name = "tenacity" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "arxiv", specifier = ">=4.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "kaggle", specifier = ">=1.6" },
+    { name = "neo4j", specifier = ">=5.24" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14" },
+    { name = "python-dateutil", specifier = ">=2.9" },
+    { name = "rich", specifier = ">=13.8" },
+    { name = "sentence-transformers", specifier = ">=3.1" },
+    { name = "tenacity", specifier = ">=9.0" },
+    { name = "typer", specifier = ">=0.12" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "lxml"

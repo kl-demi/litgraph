@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from arxiv_graphdb.ingest.kaggle_source import iter_kaggle_papers
+from litgraph.ingest.kaggle_source import iter_kaggle_papers
 
 RECORD_CS = {
     "id": "2101.00001",

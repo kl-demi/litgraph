@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from arxiv_graphdb.config import get_settings
+from litgraph.config import get_settings
 
 
 def run_command(sql: str, **params: Any) -> list[dict]:

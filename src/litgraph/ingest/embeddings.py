@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from arxiv_graphdb.config import get_settings
+from litgraph.config import get_settings
 
 
 @lru_cache

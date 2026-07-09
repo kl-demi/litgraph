@@ -1,6 +1,6 @@
-from arxiv_graphdb.config import get_settings
-from arxiv_graphdb.db import arcadedb_http
-from arxiv_graphdb.db.neo4j_client import run_write
+from litgraph.config import get_settings
+from litgraph.db import arcadedb_http
+from litgraph.db.neo4j_client import run_write
 
 _ARCADEDB_VERTEX_TYPES = ["Paper", "Category", "Author"]
 _ARCADEDB_EDGE_TYPES = ["CITES", "IN_CATEGORY", "AUTHORED"]

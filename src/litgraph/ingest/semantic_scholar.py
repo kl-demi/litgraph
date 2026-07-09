@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from arxiv_graphdb.config import get_settings
-from arxiv_graphdb.db.neo4j_client import chunked
-from arxiv_graphdb.models import CitationStub, EnrichmentResult
+from litgraph.config import get_settings
+from litgraph.db.neo4j_client import chunked
+from litgraph.models import CitationStub, EnrichmentResult
 
 _FIELDS = ",".join(
     [

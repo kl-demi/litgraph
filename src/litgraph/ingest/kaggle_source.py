@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
-from arxiv_graphdb.models import Paper
+from litgraph.models import Paper
 
 
 def _open(path: Path):

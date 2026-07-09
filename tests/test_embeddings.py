@@ -1,6 +1,6 @@
 import numpy as np
 
-from arxiv_graphdb.ingest import embeddings
+from litgraph.ingest import embeddings
 
 
 class FakeModel:

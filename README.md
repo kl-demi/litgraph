@@ -1,8 +1,9 @@
-# arxiv-graphdb
+# litgraph
 
-arXiv paper ingestion & search backed by ArcadeDB: keyword search, semantic (vector)
-search, and citation graph traversal in one database. Neo4j is also supported as an
-alternative backend — see "Alternative: Neo4j backend" below.
+Academic paper ingestion & search backed by ArcadeDB: keyword search, semantic (vector)
+search, and citation graph traversal in one database. Currently ingests from arXiv, with
+more sources (e.g. PubMed) planned. Neo4j is also supported as an alternative backend —
+see "Alternative: Neo4j backend" below.
 
 - **Storage**: ArcadeDB (self-hosted, Apache-2.0) by default. A vector index handles
   semantic search, a full-text index handles keyword search, and the graph itself models
@@ -12,7 +13,7 @@ alternative backend — see "Alternative: Neo4j backend" below.
 - **Ingestion**: historical backload from the Kaggle arXiv metadata snapshot, daily
   incremental fetch from the arXiv API, citation enrichment from Semantic Scholar.
 - **Deferred**: a FastAPI query layer and cron-based daily scheduling. For now, everything
-  is a CLI command and a set of plain importable functions in `arxiv_graphdb.search.*`
+  is a CLI command and a set of plain importable functions in `litgraph.search.*`
   that a future API layer can call directly.
 
 ## Setup
@@ -21,7 +22,7 @@ alternative backend — see "Alternative: Neo4j backend" below.
 uv sync --extra dev
 cp .env.example .env   # fill in SEMANTIC_SCHOLAR_API_KEY
 docker compose -f docker-compose.arcadedb.yml up -d
-uv run arxiv-graphdb init-db
+uv run litgraph init-db
 ```
 
 ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
@@ -36,21 +37,21 @@ docker compose -f docker-compose.arcadedb.yml up -d
 
 # Backload a subset of the Kaggle arxiv-metadata-oai-snapshot.json(.gz)
 # (download separately via `kaggle datasets download -d Cornell-University/arxiv`)
-uv run arxiv-graphdb backload --file /path/to/arxiv-metadata-oai-snapshot.json \
+uv run litgraph backload --file /path/to/arxiv-metadata-oai-snapshot.json \
     --categories cs.AI,cs.CV --start-date 2023-01-01 --limit 5000
 
 # Enrich ingested papers with Semantic Scholar citation data
-uv run arxiv-graphdb enrich --limit 500
+uv run litgraph enrich --limit 500
 
 # Pull new papers submitted since the last run (safe to run daily via cron later)
-uv run arxiv-graphdb fetch-daily --categories cs.CL,cs.LG
+uv run litgraph fetch-daily --categories cs.CL,cs.LG
 
 # Search
-uv run arxiv-graphdb search keyword "diffusion models"
-uv run arxiv-graphdb search semantic "generative models for images"
+uv run litgraph search keyword "diffusion models"
+uv run litgraph search semantic "generative models for images"
 
 # Citation graph
-uv run arxiv-graphdb citations 1706.03762 --direction both --depth 2
+uv run litgraph citations 1706.03762 --direction both --depth 2
 ```
 
 ## Alternative: Neo4j backend
@@ -76,7 +77,7 @@ NEO4J_PASSWORD=<matches NEO4J_PASSWORD used to start docker-compose.yml>
 ```
 
 ```bash
-uv run arxiv-graphdb init-db
+uv run litgraph init-db
 ```
 
 Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).

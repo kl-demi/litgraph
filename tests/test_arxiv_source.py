@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from arxiv_graphdb.ingest.pipeline import fetch_new_papers
+from litgraph.ingest.pipeline import fetch_new_papers
 
 def test_fetch_new_papers():
   beginning_of_year = datetime(2026, 1, 1, tzinfo=UTC)

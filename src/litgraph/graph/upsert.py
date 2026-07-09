@@ -1,5 +1,5 @@
-from arxiv_graphdb.db.neo4j_client import run_write
-from arxiv_graphdb.models import CitationStub, EnrichmentResult, Paper
+from litgraph.db.neo4j_client import run_write
+from litgraph.models import CitationStub, EnrichmentResult, Paper
 
 _UPSERT_PAPERS = """
 UNWIND $papers AS p

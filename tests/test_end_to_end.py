@@ -16,13 +16,13 @@ network access to arxiv.org.
 import json
 from datetime import UTC, datetime
 
-from arxiv_graphdb.db.neo4j_client import run_write
-from arxiv_graphdb.ingest import pipeline
-from arxiv_graphdb.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
-from arxiv_graphdb.ingest.semantic_scholar import SemanticScholarClient
-from arxiv_graphdb.search.citations import get_citing_papers, get_references
-from arxiv_graphdb.search.keyword import keyword_search
-from arxiv_graphdb.search.semantic import semantic_search
+from litgraph.db.neo4j_client import run_write
+from litgraph.ingest import pipeline
+from litgraph.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
+from litgraph.ingest.semantic_scholar import SemanticScholarClient
+from litgraph.search.citations import get_citing_papers, get_references
+from litgraph.search.keyword import keyword_search
+from litgraph.search.semantic import semantic_search
 
 ATTENTION_ID = "1706.03762"
 BERT_ID = "1810.04805"

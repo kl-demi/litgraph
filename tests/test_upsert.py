@@ -1,5 +1,5 @@
-from arxiv_graphdb.graph import upsert
-from arxiv_graphdb.models import CitationStub, EnrichmentResult, Paper
+from litgraph.graph import upsert
+from litgraph.models import CitationStub, EnrichmentResult, Paper
 
 
 def test_upsert_papers_builds_expected_params(mocker):
