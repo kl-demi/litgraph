@@ -10,22 +10,36 @@ from arxiv_graphdb.config import get_settings
 @lru_cache
 def get_driver() -> Driver:
     settings = get_settings()
-    return GraphDatabase.driver(
-        settings.neo4j_uri,
-        auth=(settings.neo4j_user, settings.neo4j_password),
-    )
+    if settings.graph_backend == "neo4j":
+        uri, user, password = settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password
+    else:
+        uri, user, password = (
+            settings.arcadedb_uri,
+            settings.arcadedb_user,
+            settings.arcadedb_password,
+        )
+    return GraphDatabase.driver(uri, auth=(user, password))
+
+
+def _session_database() -> str | None:
+    """Neo4j has an implicit default database; ArcadeDB (the default backend) doesn't,
+    so its Bolt sessions must name one explicitly."""
+    settings = get_settings()
+    if settings.graph_backend == "neo4j":
+        return None
+    return settings.arcadedb_database
 
 
 def run_write(cypher: str, **params: Any) -> list[dict]:
     driver = get_driver()
-    with driver.session() as session:
+    with driver.session(database=_session_database()) as session:
         result = session.execute_write(lambda tx: list(tx.run(cypher, **params)))
         return [record.data() for record in result]
 
 
 def run_read(cypher: str, **params: Any) -> list[dict]:
     driver = get_driver()
-    with driver.session() as session:
+    with driver.session(database=_session_database()) as session:
         result = session.execute_read(lambda tx: list(tx.run(cypher, **params)))
         return [record.data() for record in result]
 

@@ -8,7 +8,7 @@ from arxiv_graphdb.config import get_settings
 from arxiv_graphdb.db.schema import ensure_schema
 from arxiv_graphdb.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
 
-app = typer.Typer(help="arXiv paper ingestion & search backed by Neo4j.")
+app = typer.Typer(help="arXiv paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
 search_app = typer.Typer(help="Query the graph.")
 app.add_typer(search_app, name="search")
 
@@ -29,7 +29,7 @@ def _parse_date(value: str | None) -> date | None:
 
 @app.command("init-db")
 def init_db() -> None:
-    """Create Neo4j constraints and indexes (idempotent)."""
+    """Create the graph database's constraints and indexes (idempotent)."""
     ensure_schema()
     console.print("[green]Schema ensured (constraints + full-text + vector indexes).[/green]")
 

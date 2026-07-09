@@ -1,11 +1,12 @@
 # arxiv-graphdb
 
-arXiv paper ingestion & search backed by Neo4j: keyword search, semantic (vector) search,
-and citation graph traversal in one database.
+arXiv paper ingestion & search backed by ArcadeDB: keyword search, semantic (vector)
+search, and citation graph traversal in one database. Neo4j is also supported as an
+alternative backend — see "Alternative: Neo4j backend" below.
 
-- **Storage**: Neo4j. A native vector index handles semantic search, a full-text index
-  handles keyword search, and the graph itself models the citation network — no separate
-  vector DB or search engine.
+- **Storage**: ArcadeDB (self-hosted, Apache-2.0) by default. A vector index handles
+  semantic search, a full-text index handles keyword search, and the graph itself models
+  the citation network — no separate vector DB or search engine.
 - **Embeddings**: `sentence-transformers/allenai-specter` (768-dim), run locally — no
   external embedding API/cost.
 - **Ingestion**: historical backload from the Kaggle arXiv metadata snapshot, daily
@@ -18,25 +19,25 @@ and citation graph traversal in one database.
 
 ```bash
 uv sync --extra dev
-cp .env.example .env   # fill in NEO4J_PASSWORD / SEMANTIC_SCHOLAR_API_KEY
-docker compose up -d
+cp .env.example .env   # fill in SEMANTIC_SCHOLAR_API_KEY
+docker compose -f docker-compose.arcadedb.yml up -d
 uv run arxiv-graphdb init-db
 ```
 
-Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).
+ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
 
 ## Usage
 
 ```bash
 # --- Step 1: Start up container
-docker compose up -d
+docker compose -f docker-compose.arcadedb.yml up -d
 
 # --- Step 2: Choose any of the following:
 
 # Backload a subset of the Kaggle arxiv-metadata-oai-snapshot.json(.gz)
 # (download separately via `kaggle datasets download -d Cornell-University/arxiv`)
 uv run arxiv-graphdb backload --file /path/to/arxiv-metadata-oai-snapshot.json \
-    --categories cs.CL,cs.LG --start-date 2023-01-01 --limit 5000
+    --categories cs.AI,cs.CV --start-date 2023-01-01 --limit 5000
 
 # Enrich ingested papers with Semantic Scholar citation data
 uv run arxiv-graphdb enrich --limit 500
@@ -51,6 +52,36 @@ uv run arxiv-graphdb search semantic "generative models for images"
 # Citation graph
 uv run arxiv-graphdb citations 1706.03762 --direction both --depth 2
 ```
+
+## Alternative: Neo4j backend
+
+Neo4j also works as a backend, toggled via `GRAPH_BACKEND`. Most of this codebase is
+backend-agnostic Cypher that runs unmodified against either engine — only vector search,
+full-text search, and schema/index setup differ, since those go through each engine's own
+procedures/SQL (`db.index.vector.queryNodes`, `CREATE VECTOR INDEX`, etc. for Neo4j) rather
+than anything in the openCypher standard both engines implement.
+
+```bash
+docker compose up -d   # starts Neo4j via docker-compose.yml
+```
+
+Then in `.env`, switch the backend (see the commented-out block at the bottom of
+`.env.example`):
+
+```
+GRAPH_BACKEND=neo4j
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=<matches NEO4J_PASSWORD used to start docker-compose.yml>
+```
+
+```bash
+uv run arxiv-graphdb init-db
+```
+
+Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).
+Everything else — `backload`, `enrich`, `fetch-daily`, `search keyword`, `search semantic`,
+`citations` — works the same regardless of backend.
 
 ## Graph schema
 

@@ -6,6 +6,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # "arcadedb" (default) or "neo4j". This flag controls which SQL/Cypher dialect
+    # schema.py, semantic.py, and keyword.py use for vector/full-text index creation
+    # and querying, which are vendor-specific on both sides (not part of core Cypher).
+    graph_backend: str = "arcadedb"
+
+    arcadedb_uri: str = "bolt://localhost:7688"
+    arcadedb_http_url: str = "http://localhost:2480"
+    arcadedb_database: str = "arxiv"
+    arcadedb_user: str = "root"
+    arcadedb_password: str = "playwithdata"
+
+    # Only used when graph_backend == "neo4j".
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "changeme123"
