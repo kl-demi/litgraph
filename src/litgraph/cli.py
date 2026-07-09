@@ -8,13 +8,16 @@ from litgraph.config import get_settings
 from litgraph.db.schema import ensure_schema
 from litgraph.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
 
+
 app = typer.Typer(help="Academic paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
 search_app = typer.Typer(help="Query the graph.")
 app.add_typer(search_app, name="search")
+stats_app = typer.Typer(help="Inspect what's in the graph.")
+app.add_typer(stats_app, name="stats")
 
 console = Console()
 
-
+# -------------------------------- HELPERS -------------------------------------
 def _parse_categories(categories: str | None) -> list[str] | None:
     if not categories:
         return None
@@ -26,7 +29,18 @@ def _parse_date(value: str | None) -> date | None:
         return None
     return datetime.strptime(value, "%Y-%m-%d").date()
 
+def _print_results(rows: list[dict]) -> None:
+    if not rows:
+        console.print("[yellow]No results.[/yellow]")
+        return
+    table = Table()
+    for key in rows[0]:
+        table.add_column(key)
+    for row in rows:
+        table.add_row(*[str(row.get(key, "")) for key in rows[0]])
+    console.print(table)
 
+# -------------------------------- MAIN APP ------------------------------------
 @app.command("init-db")
 def init_db() -> None:
     """Create the graph database's constraints and indexes (idempotent)."""
@@ -78,20 +92,6 @@ def enrich(
     console.print(f"[green]Enriched {total} papers.[/green]")
 
 
-@search_app.command("keyword")
-def search_keyword(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
-    from litgraph.search.keyword import keyword_search
-
-    _print_results(keyword_search(query, top_k=top_k))
-
-
-@search_app.command("semantic")
-def search_semantic(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
-    from litgraph.search.semantic import semantic_search
-
-    _print_results(semantic_search(query, top_k=top_k))
-
-
 @app.command()
 def citations(
     arxiv_id: str,
@@ -111,17 +111,58 @@ def citations(
         console.print(f"[bold]{depth}-hop neighborhood:[/bold]")
         _print_results(citation_neighborhood(arxiv_id, depth=depth))
 
+        
 
-def _print_results(rows: list[dict]) -> None:
-    if not rows:
-        console.print("[yellow]No results.[/yellow]")
-        return
-    table = Table()
-    for key in rows[0]:
-        table.add_column(key)
-    for row in rows:
-        table.add_row(*[str(row.get(key, "")) for key in rows[0]])
-    console.print(table)
+# ------------------------------- SEARCH APP -----------------------------------
+@search_app.command("keyword")
+def search_keyword(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
+    from litgraph.search.keyword import keyword_search
+
+    _print_results(keyword_search(query, top_k=top_k))
+
+
+@search_app.command("semantic")
+def search_semantic(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
+    from litgraph.search.semantic import semantic_search
+
+    _print_results(semantic_search(query, top_k=top_k))
+
+
+
+# ------------------------------- STATS APP ------------------------------------
+@stats_app.command("count")
+def stats_count() -> None:
+    """Total number of papers in the graph."""
+    from litgraph.search.stats import paper_count
+
+    console.print(f"Total papers: [bold]{paper_count()}[/bold]")
+
+
+@stats_app.command("latest")
+def stats_latest(n: int = typer.Option(10, "--n", help="Number of papers to show")) -> None:
+    """Published dates of the latest N papers."""
+    from litgraph.search.stats import latest_papers
+
+    _print_results(latest_papers(limit=n))
+
+
+@stats_app.command("most-cited")
+def stats_most_cited(
+    category: str = typer.Option(None, "--category", help="Restrict to a single arXiv category"),
+) -> None:
+    """The single most cited paper."""
+    from litgraph.search.citations import most_cited
+
+    _print_results(most_cited(category=category, limit=1))
+
+
+@stats_app.command("top-authors")
+def stats_top_authors(n: int = typer.Option(10, "--n", help="Number of authors to show")) -> None:
+    """The N most prolific authors, by number of papers authored."""
+    from litgraph.search.stats import top_authors
+
+    _print_results(top_authors(limit=n))
+
 
 
 if __name__ == "__main__":

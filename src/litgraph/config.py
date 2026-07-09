@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     arcadedb_uri: str = "bolt://localhost:7688"
     arcadedb_http_url: str = "http://localhost:2480"
-    arcadedb_database: str = "arxiv"
+    arcadedb_database: str = "litgraph"
     arcadedb_user: str = "root"
     arcadedb_password: str = "playwithdata"
 
