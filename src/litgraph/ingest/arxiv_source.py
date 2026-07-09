@@ -25,15 +25,19 @@ def get_checkpoint(job: str = "arxiv_daily") -> datetime | None:
     if not rows or rows[0]["last_seen_date"] is None:
         return None
     value = rows[0]["last_seen_date"]
-    return value.to_native() if hasattr(value, "to_native") else value
+    if hasattr(value, "to_native"):
+        return value.to_native()
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return value
 
 
 def set_checkpoint(last_seen_date: datetime, job: str = "arxiv_daily") -> None:
     run_write(
         _SET_CHECKPOINT,
         job=job,
-        last_seen_date=last_seen_date,
-        last_run_at=datetime.now(UTC),
+        last_seen_date=last_seen_date.isoformat(),
+        last_run_at=datetime.now(UTC).isoformat(),
     )
 
 

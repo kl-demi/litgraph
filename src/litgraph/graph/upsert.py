@@ -87,8 +87,8 @@ def _paper_params(paper: Paper) -> dict:
         "comments": paper.comments,
         "source": paper.source,
         "embedding": paper.embedding,
-        "fetched_at": paper.fetched_at,
-        "embedded_at": paper.embedded_at,
+        "fetched_at": paper.fetched_at.isoformat() if paper.fetched_at else None,
+        "embedded_at": paper.embedded_at.isoformat() if paper.embedded_at else None,
         "authors": paper.authors,
     }
 
@@ -156,7 +156,7 @@ def apply_enrichment(results: list[EnrichmentResult]) -> None:
                 "citation_count": r.citation_count,
                 "reference_count": r.reference_count,
                 "influential_citation_count": r.influential_citation_count,
-                "enriched_at": r.enriched_at,
+                "enriched_at": r.enriched_at.isoformat() if r.enriched_at else None,
             }
             for r in results
         ],
