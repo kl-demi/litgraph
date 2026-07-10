@@ -5,6 +5,7 @@ _UPSERT_PAPERS = """
 UNWIND $papers AS p
 MERGE (paper:Paper {id: p.id})
 SET paper.arxiv_id = p.arxiv_id,
+    paper.pmid = p.pmid,
     paper.s2_paper_id = p.s2_paper_id,
     paper.title = p.title,
     paper.abstract = p.abstract,
@@ -50,6 +51,7 @@ MERGE (stub:Paper {id: s.id})
 ON CREATE SET stub.is_stub = true,
               stub.title = s.title,
               stub.arxiv_id = s.arxiv_id,
+              stub.pmid = s.pmid,
               stub.s2_paper_id = s.s2_paper_id
 """
 
@@ -62,7 +64,7 @@ MERGE (citing)-[:CITES]->(cited)
 
 _UPDATE_ENRICHMENT = """
 UNWIND $results AS r
-MATCH (paper:Paper {id: r.arxiv_id})
+MATCH (paper:Paper {id: r.paper_id})
 SET paper.s2_paper_id = r.s2_paper_id,
     paper.citation_count = r.citation_count,
     paper.reference_count = r.reference_count,
@@ -140,10 +142,10 @@ def apply_enrichment(results: list[EnrichmentResult]) -> None:
     for r in results:
         for ref in r.references:
             stubs.append(ref)
-            edges.append((r.arxiv_id, ref.id))
+            edges.append((r.paper_id, ref.id))
         for citer in r.citations:
             stubs.append(citer)
-            edges.append((citer.id, r.arxiv_id))
+            edges.append((citer.id, r.paper_id))
 
     upsert_paper_stubs(stubs)
     upsert_citation_edges(edges)
@@ -151,7 +153,7 @@ def apply_enrichment(results: list[EnrichmentResult]) -> None:
         _UPDATE_ENRICHMENT,
         results=[
             {
-                "arxiv_id": r.arxiv_id,
+                "paper_id": r.paper_id,
                 "s2_paper_id": r.s2_paper_id,
                 "citation_count": r.citation_count,
                 "reference_count": r.reference_count,

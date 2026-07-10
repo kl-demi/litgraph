@@ -48,7 +48,7 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
     """
     mock_run_write = mocker.patch.object(upsert, "run_write")
     result = EnrichmentResult(
-        arxiv_id="2101.00001",
+        paper_id="2101.00001",
         s2_paper_id="s2-1",
         citation_count=3,
         references=[CitationStub(arxiv_id="2001.00001", title="Ref")],

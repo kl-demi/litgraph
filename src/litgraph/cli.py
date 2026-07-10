@@ -7,7 +7,13 @@ from rich.table import Table
 
 from litgraph.config import get_settings
 from litgraph.db.schema import ensure_schema
-from litgraph.ingest.pipeline import run_backload, run_daily_fetch, run_enrichment
+from litgraph.ingest.pipeline import (
+    run_backload,
+    run_backload_pubmed,
+    run_daily_fetch,
+    run_daily_fetch_pubmed,
+    run_enrichment,
+)
 
 
 app = typer.Typer(help="Academic paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
@@ -84,6 +90,42 @@ def fetch_daily(
     console.print(f"[green]Fetched {total} new papers.[/green]")
 
 
+@app.command("backload-pubmed")
+def backload_pubmed(
+    dir: str = typer.Option(..., "--dir", help="Directory (or glob) of NCBI pubmed*.xml[.gz] baseline/update files"),
+    mesh_terms: str = typer.Option(
+        None, "--mesh-terms", help="Comma-separated MeSH headings to match, e.g. Anatomy,Phenomena and Processes"
+    ),
+    start_date: str = typer.Option(None, "--start-date", help="YYYY-MM-DD"),
+    end_date: str = typer.Option(None, "--end-date", help="YYYY-MM-DD"),
+    limit: int = typer.Option(None, "--limit", help="Max papers to ingest"),
+    batch_size: int = typer.Option(200, "--batch-size"),
+) -> None:
+    """Backload historical papers from NCBI's PubMed baseline/update XML files."""
+    terms = _parse_categories(mesh_terms)
+    total = run_backload_pubmed(
+        dir,
+        mesh_terms=terms,
+        start_date=_parse_date(start_date),
+        end_date=_parse_date(end_date),
+        limit=limit,
+        batch_size=batch_size,
+    )
+    console.print(f"[green]Backloaded {total} PubMed papers.[/green]")
+
+
+@app.command("fetch-daily-pubmed")
+def fetch_daily_pubmed(
+    mesh_terms: str = typer.Option(None, "--mesh-terms", help="PubMed query string, e.g. a MeSH term expression"),
+    batch_size: int = typer.Option(200, "--batch-size"),
+) -> None:
+    """Fetch new papers published since the last run, via NCBI E-utilities."""
+    settings = get_settings()
+    query = mesh_terms or settings.default_pubmed_mesh_terms
+    total = run_daily_fetch_pubmed(query, batch_size=batch_size)
+    console.print(f"[green]Fetched {total} new PubMed papers.[/green]")
+
+
 @app.command()
 def enrich(
     limit: int = typer.Option(500, "--limit", help="Max not-yet-enriched papers to process"),
@@ -95,22 +137,22 @@ def enrich(
 
 @app.command()
 def citations(
-    arxiv_id: str,
+    paper_id: str = typer.Argument(..., help="An arXiv id (e.g. 2101.00001) or a PubMed PMID (e.g. 12345678)"),
     direction: str = typer.Option("both", "--direction", help="cites | cited-by | both"),
     depth: int = typer.Option(1, "--depth", help="Hops for neighborhood traversal (1-3)"),
 ) -> None:
-    """Show citation graph around a paper."""
+    """Show citation graph around a paper, looked up by arXiv id or PMID."""
     from litgraph.search.citations import citation_neighborhood, get_citing_papers, get_references
 
     if direction in ("cites", "both"):
-        console.print(f"[bold]Papers {arxiv_id} cites:[/bold]")
-        _print_results(get_references(arxiv_id))
+        console.print(f"[bold]Papers {paper_id} cites:[/bold]")
+        _print_results(get_references(paper_id))
     if direction in ("cited-by", "both"):
-        console.print(f"[bold]Papers citing {arxiv_id}:[/bold]")
-        _print_results(get_citing_papers(arxiv_id))
+        console.print(f"[bold]Papers citing {paper_id}:[/bold]")
+        _print_results(get_citing_papers(paper_id))
     if depth > 1:
         console.print(f"[bold]{depth}-hop neighborhood:[/bold]")
-        _print_results(citation_neighborhood(arxiv_id, depth=depth))
+        _print_results(citation_neighborhood(paper_id, depth=depth))
 
         
 
