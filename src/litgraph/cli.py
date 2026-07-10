@@ -221,17 +221,17 @@ def stats_overview() -> None:
     table.add_column(style="bold")
     table.add_column()
     table.add_row("Papers", str(data["papers"]))
-    table.add_row("   enriched (citation data)", pct(data["enriched"], data["papers"]))
-    table.add_row("   embedded (semantic search)", pct(data["embedded"], data["papers"]))
+    table.add_row("     enriched (citation data)", pct(data["enriched"], data["papers"]))
+    table.add_row("     embedded (semantic search)", pct(data["embedded"], data["papers"]))
     table.add_row("Citation-graph stub papers", str(data["stubs"]))
     table.add_row("Authors", str(data["authors"]))
     table.add_row("Categories", str(data["categories"]))
     if data["top_category"]:
-        table.add_row("   most common", f"{data['top_category']['code']} ({data['top_category']['paper_count']} papers)")
+        table.add_row("     most common", f"{data['top_category']['code']} ({data['top_category']['paper_count']} papers)")
     table.add_row("Edges")
-    table.add_row("   authored", str(data["authored_edges"]))
-    table.add_row("   in_category", str(data["category_edges"]))
-    table.add_row("   cites", str(data["citation_edges"]))
+    table.add_row("     authored", str(data["authored_edges"]))
+    table.add_row("     in_category", str(data["category_edges"]))
+    table.add_row("     cites", str(data["citation_edges"]))
     if data["earliest_published"] and data["latest_published"]:
         table.add_row("Published date range", f"{data['earliest_published']} → {data['latest_published']}")
 
