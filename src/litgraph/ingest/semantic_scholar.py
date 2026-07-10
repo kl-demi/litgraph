@@ -31,11 +31,13 @@ def _is_retryable(exc: BaseException) -> bool:
 def _stub_from(entry: dict | None) -> CitationStub | None:
     if not entry:
         return None
-    arxiv_id = (entry.get("externalIds") or {}).get("ArXiv")
+    external_ids = entry.get("externalIds") or {}
+    arxiv_id = external_ids.get("ArXiv")
+    pmid = external_ids.get("PubMed")
     s2_paper_id = entry.get("paperId")
-    if not arxiv_id and not s2_paper_id:
+    if not arxiv_id and not pmid and not s2_paper_id:
         return None
-    return CitationStub(arxiv_id=arxiv_id, s2_paper_id=s2_paper_id, title=entry.get("title"))
+    return CitationStub(arxiv_id=arxiv_id, pmid=pmid, s2_paper_id=s2_paper_id, title=entry.get("title"))
 
 
 class SemanticScholarClient:
@@ -62,11 +64,13 @@ class SemanticScholarClient:
     def __exit__(self, *exc_info) -> None:
         self.close()
 
-    def enrich(self, arxiv_ids: list[str]) -> list[EnrichmentResult]:
-        """Fetch citation data for a list of arXiv ids, batching and rate-limiting internally."""
+    def enrich(self, pairs: list[tuple[str, str]], id_prefix: str) -> list[EnrichmentResult]:
+        """Fetch citation data for a list of (paper_id, external_id) pairs, batching and
+        rate-limiting internally. ``id_prefix`` is the Semantic Scholar external-id
+        namespace for ``external_id`` (e.g. "ARXIV", "PMID")."""
         results: list[EnrichmentResult] = []
-        for batch in chunked(arxiv_ids, self._batch_size):
-            results.extend(self._enrich_batch(batch))
+        for batch in chunked(pairs, self._batch_size):
+            results.extend(self._enrich_batch(batch, id_prefix))
         return results
 
     def _throttle(self) -> None:
@@ -82,12 +86,12 @@ class SemanticScholarClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
-    def _post_batch(self, ids: list[str]) -> list[dict | None]:
+    def _post_batch(self, external_ids: list[str], id_prefix: str) -> list[dict | None]:
         self._throttle()
         response = self._client.post(
             "/paper/batch",
             params={"fields": _FIELDS},
-            json={"ids": [f"ARXIV:{i}" for i in ids]},
+            json={"ids": [f"{id_prefix}:{i}" for i in external_ids]},
         )
         if response.status_code == 429:
             retry_after = float(response.headers.get("Retry-After", 5))
@@ -95,18 +99,18 @@ class SemanticScholarClient:
         response.raise_for_status()
         return response.json()
 
-    def _enrich_batch(self, ids: list[str]) -> list[EnrichmentResult]:
-        items = self._post_batch(ids)
+    def _enrich_batch(self, pairs: list[tuple[str, str]], id_prefix: str) -> list[EnrichmentResult]:
+        items = self._post_batch([external_id for _, external_id in pairs], id_prefix)
         enriched_at = datetime.now(UTC)
         out: list[EnrichmentResult] = []
-        for arxiv_id, item in zip(ids, items, strict=True):
+        for (paper_id, _), item in zip(pairs, items, strict=True):
             if not item:
                 continue
             references = [s for s in (_stub_from(r) for r in item.get("references") or []) if s]
             citations = [s for s in (_stub_from(c) for c in item.get("citations") or []) if s]
             out.append(
                 EnrichmentResult(
-                    arxiv_id=arxiv_id,
+                    paper_id=paper_id,
                     s2_paper_id=item.get("paperId"),
                     citation_count=item.get("citationCount"),
                     reference_count=item.get("referenceCount"),

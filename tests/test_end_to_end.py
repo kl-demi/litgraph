@@ -123,7 +123,7 @@ def test_pipeline_end_to_end(tmp_path, mocker):
         mocker.patch.object(
             SemanticScholarClient,
             "_post_batch",
-            side_effect=lambda ids: [_S2_PAYLOAD.get(i) for i in ids],
+            side_effect=lambda ids, id_prefix: [_S2_PAYLOAD.get(i) for i in ids],
         )
         enriched = run_enrichment(limit=10)
         assert enriched == 2

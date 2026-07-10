@@ -9,15 +9,24 @@ class _AdapterEmbedder:
     """
 
     def __init__(self, base_model_name: str, adapter_name: str):
+        import torch
         from adapters import AutoAdapterModel
         from transformers import AutoTokenizer
+
+        if torch.cuda.is_available():
+            self._device = "cuda"
+        elif torch.backends.mps.is_available():
+            self._device = "mps"
+        else:
+            self._device = "cpu"
 
         self._tokenizer = AutoTokenizer.from_pretrained(base_model_name)
         self._model = AutoAdapterModel.from_pretrained(base_model_name)
         self._model.load_adapter(adapter_name, source="hf", set_active=True)
+        self._model.to(self._device)
         self._model.eval()
 
-    def encode(self, texts, batch_size=16, normalize_embeddings=True, **_kwargs):
+    def encode(self, texts, batch_size=32, normalize_embeddings=True, **_kwargs):
         import torch
 
         all_vectors = []
@@ -29,7 +38,7 @@ class _AdapterEmbedder:
                 truncation=True,
                 max_length=512,
                 return_tensors="pt",
-            )
+            ).to(self._device)
             with torch.no_grad():
                 outputs = self._model(**inputs)
             # SPECTER2 embeddings are the [CLS] token of the last hidden state.

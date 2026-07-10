@@ -42,11 +42,11 @@ def test_enrich_maps_references_and_citations(mocker):
         client._client, "post", return_value=FakeResponse(200, payload)
     )
 
-    results = client.enrich(["2101.00001", "2101.99999"])
+    results = client.enrich([("2101.00001", "2101.00001"), ("2101.99999", "2101.99999")], id_prefix="ARXIV")
 
     assert len(results) == 1
     result = results[0]
-    assert result.arxiv_id == "2101.00001"
+    assert result.paper_id == "2101.00001"
     assert result.s2_paper_id == "s2-1"
     assert result.citation_count == 5
     assert len(result.references) == 1
@@ -69,6 +69,6 @@ def test_enrich_retries_on_429(mocker):
     responses = [FakeResponse(429, headers={"Retry-After": "0"}), FakeResponse(200, payload)]
     mocker.patch.object(client._client, "post", side_effect=responses)
 
-    results = client.enrich(["2101.00001"])
+    results = client.enrich([("2101.00001", "2101.00001")], id_prefix="ARXIV")
     assert len(results) == 1
     client.close()

@@ -58,6 +58,16 @@ ORDER BY p.published_date DESC
 LIMIT $limit
 """
 
+_OLDEST_PAPERS = """
+MATCH (p:Paper)
+WHERE p.published_date IS NOT NULL
+OPTIONAL MATCH (a:Author)-[:AUTHORED]->(p)
+WITH p, collect(a.name) AS authors
+RETURN p.arxiv_id AS arxiv_id, p.title AS title, p.published_date AS published_date, authors
+ORDER BY p.published_date ASC
+LIMIT $limit
+"""
+
 _TOP_AUTHORS = """
 MATCH (a:Author)-[:AUTHORED]->(p:Paper)
 RETURN a.name AS name, count(p) AS paper_count
@@ -92,6 +102,13 @@ def overview() -> dict:
 def latest_papers(limit: int = 10) -> list[dict]:
     """The most recently published papers, with their authors."""
     rows = run_read(_LATEST_PAPERS, limit=limit)
+    for row in rows:
+        row["authors"] = ", ".join(a for a in row["authors"] if a)
+    return rows
+
+def oldest_papers(limit: int = 10) -> list[dict]:
+    """The least recently published papers, with their authors."""
+    rows = run_read(_OLDEST_PAPERS, limit=limit)
     for row in rows:
         row["authors"] = ", ".join(a for a in row["authors"] if a)
     return rows

@@ -13,6 +13,7 @@ _ARCADEDB_UNIQUE_INDEXES = [
 
 _ARCADEDB_RANGE_INDEXES = [
     ("Paper", "arxiv_id", "STRING"),
+    ("Paper", "pmid", "STRING"),
     ("Paper", "s2_paper_id", "STRING"),
     ("Paper", "enriched_at", "DATETIME"),
 ]
@@ -25,6 +26,7 @@ _CONSTRAINTS = [
 
 _RANGE_INDEXES = [
     "CREATE INDEX paper_arxiv_id IF NOT EXISTS FOR (p:Paper) ON (p.arxiv_id)",
+    "CREATE INDEX paper_pmid IF NOT EXISTS FOR (p:Paper) ON (p.pmid)",
     "CREATE INDEX paper_s2_id IF NOT EXISTS FOR (p:Paper) ON (p.s2_paper_id)",
     "CREATE INDEX paper_enriched_at IF NOT EXISTS FOR (p:Paper) ON (p.enriched_at)",
 ]

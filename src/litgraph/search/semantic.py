@@ -6,7 +6,7 @@ from litgraph.ingest.embeddings import embed_texts
 _VECTOR_QUERY = """
 CALL db.index.vector.queryNodes('paper_embedding', $top_k, $vector) YIELD node, score
 WHERE node.is_stub = false
-RETURN node.id AS id, node.arxiv_id AS arxiv_id, node.title AS title,
+RETURN node.id AS id, node.arxiv_id AS arxiv_id, node.pmid AS pmid, node.title AS title,
        node.abstract AS abstract, node.categories AS categories, score
 ORDER BY score DESC
 """
@@ -27,6 +27,7 @@ def semantic_search(query: str, top_k: int = 10) -> list[dict]:
         {
             "id": row.get("id"),
             "arxiv_id": row.get("arxiv_id"),
+            "pmid": row.get("pmid"),
             "title": row.get("title"),
             "abstract": row.get("abstract"),
             "categories": row.get("categories"),

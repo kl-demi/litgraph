@@ -35,6 +35,15 @@ class Settings(BaseSettings):
 
     kaggle_dataset_path: str | None = None
 
+    default_pubmed_mesh_terms: str = (
+        '"Anatomy"[MeSH Major Topic] OR "Phenomena and Processes"[MeSH Major Topic]'
+    )
+    pubmed_baseline_dir: str | None = None
+
+    ncbi_email: str | None = None
+    ncbi_api_key: str | None = None
+    ncbi_eutils_base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
     @property
     def default_categories_list(self) -> list[str]:
         return [c.strip() for c in self.default_arxiv_categories.split(",") if c.strip()]
