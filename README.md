@@ -7,8 +7,10 @@ more sources (e.g. PubMed) planned.
 - **Storage**: ArcadeDB (self-hosted, Apache-2.0) by default. A vector index handles
   semantic search, a full-text index handles keyword search, and the graph itself models
   the citation network.
-- **Embeddings**: `sentence-transformers/allenai-specter` (768-dim), run locally — no
-  external embedding API/cost.
+- **Embeddings**: SPECTER2 (`allenai/specter2_base` + `allenai/specter2` proximity adapter,
+  768-dim), run locally via the `adapters` library — no external embedding API/cost. It is
+  trained on citation networks, ideal for semantic search and relatedness of scientific and
+  biomedical papers in a graph database.
 - **Ingestion**: historical backload from the Kaggle arXiv metadata snapshot, daily
   incremental fetch from the arXiv API, citation enrichment from Semantic Scholar.
 - **Deferred**: a FastAPI query layer and cron-based daily scheduling. For now, everything

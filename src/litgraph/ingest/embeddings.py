@@ -3,11 +3,47 @@ from functools import lru_cache
 from litgraph.config import get_settings
 
 
+class _AdapterEmbedder:
+    """Wraps SPECTER2 (base model + proximity adapter) behind an .encode() interface,
+    since it's an AdapterHub model rather than a plain sentence-transformers checkpoint.
+    """
+
+    def __init__(self, base_model_name: str, adapter_name: str):
+        from adapters import AutoAdapterModel
+        from transformers import AutoTokenizer
+
+        self._tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+        self._model = AutoAdapterModel.from_pretrained(base_model_name)
+        self._model.load_adapter(adapter_name, source="hf", set_active=True)
+        self._model.eval()
+
+    def encode(self, texts, batch_size=16, normalize_embeddings=True, **_kwargs):
+        import torch
+
+        all_vectors = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            inputs = self._tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+            # SPECTER2 embeddings are the [CLS] token of the last hidden state.
+            cls_embeddings = outputs.last_hidden_state[:, 0, :]
+            if normalize_embeddings:
+                cls_embeddings = torch.nn.functional.normalize(cls_embeddings, p=2, dim=1)
+            all_vectors.extend(cls_embeddings.tolist())
+        return all_vectors
+
+
 @lru_cache
 def _get_model():
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(get_settings().embedding_model_name)
+    settings = get_settings()
+    return _AdapterEmbedder(settings.embedding_model_name, settings.embedding_adapter_name)
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -15,8 +51,8 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
     model = _get_model()
-    vectors = model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
-    return [v.tolist() for v in vectors]
+    vectors = model.encode(texts, normalize_embeddings=True)
+    return [list(v) for v in vectors]
 
 
 def paper_embedding_text(title: str, abstract: str) -> str:

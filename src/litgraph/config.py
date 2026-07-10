@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     semantic_scholar_batch_size: int = 500
     semantic_scholar_requests_per_second: float = 1.0
 
-    embedding_model_name: str = "sentence-transformers/allenai-specter"
+    embedding_model_name: str = "allenai/specter2_base"
+    embedding_adapter_name: str = "allenai/specter2"
     embedding_dimensions: int = 768
 
     default_arxiv_categories: str = "cs.CL,cs.LG,cs.AI"
