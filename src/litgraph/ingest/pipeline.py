@@ -60,19 +60,32 @@ def run_backload(
     """Stream the Kaggle snapshot, embed, and upsert matching papers. Returns count ingested."""
     batch: list[Paper] = []
     total = 0
-    for paper in iter_kaggle_papers(
-        path, categories=categories, start_date=start_date, end_date=end_date, limit=limit
-    ):
-        batch.append(paper)
-        if len(batch) >= batch_size:
+    earliest: date | None = None
+    latest: date | None = None
+
+    with _progress(determinate=limit is not None) as progress:
+        task = progress.add_task("Backloading papers", total=limit)
+        for paper in iter_kaggle_papers(
+            path, categories=categories, start_date=start_date, end_date=end_date, limit=limit
+        ):
+            batch.append(paper)
+            published = paper.published_date
+            if published is not None:
+                if earliest is None or published < earliest:
+                    earliest = published
+                if latest is None or published > latest:
+                    latest = published
+            if len(batch) >= batch_size:
+                _embed_and_upsert(batch)
+                total += len(batch)
+                progress.update(task, completed=total)
+                batch = []
+        if batch:
             _embed_and_upsert(batch)
             total += len(batch)
-            console.log(f"backload: upserted {total} papers so far")
-            batch = []
-    if batch:
-        _embed_and_upsert(batch)
-        total += len(batch)
-    console.log(f"backload: done, {total} papers upserted")
+            progress.update(task, completed=total)
+
+    console.log(f"backload: done, {total} papers upserted, batch spans {earliest} to {latest}")
     return total
 
 
@@ -122,19 +135,32 @@ def run_backload_pubmed(
     """Stream NCBI's PubMed baseline files, embed, and upsert matching papers. Returns count ingested."""
     batch: list[Paper] = []
     total = 0
-    for paper in iter_pubmed_baseline_papers(
-        dir_or_glob, mesh_terms=mesh_terms, start_date=start_date, end_date=end_date, limit=limit
-    ):
-        batch.append(paper)
-        if len(batch) >= batch_size:
+    earliest: date | None = None
+    latest: date | None = None
+
+    with _progress(determinate=limit is not None) as progress:
+        task = progress.add_task("Backloading PubMed papers", total=limit)
+        for paper in iter_pubmed_baseline_papers(
+            dir_or_glob, mesh_terms=mesh_terms, start_date=start_date, end_date=end_date, limit=limit
+        ):
+            batch.append(paper)
+            published = paper.published_date
+            if published is not None:
+                if earliest is None or published < earliest:
+                    earliest = published
+                if latest is None or published > latest:
+                    latest = published
+            if len(batch) >= batch_size:
+                _embed_and_upsert(batch)
+                total += len(batch)
+                progress.update(task, completed=total)
+                batch = []
+        if batch:
             _embed_and_upsert(batch)
             total += len(batch)
-            console.log(f"backload-pubmed: upserted {total} papers so far")
-            batch = []
-    if batch:
-        _embed_and_upsert(batch)
-        total += len(batch)
-    console.log(f"backload-pubmed: done, {total} papers upserted")
+            progress.update(task, completed=total)
+
+    console.log(f"backload-pubmed: done, {total} papers upserted, batch spans {earliest} to {latest}")
     return total
 
 
