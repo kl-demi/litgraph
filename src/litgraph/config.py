@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     ncbi_api_key: str | None = None
     ncbi_eutils_base_url: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
+    run_log_path: str = "logs/ingestion_runs.jsonl"
+
     @property
     def default_categories_list(self) -> list[str]:
         return [c.strip() for c in self.default_arxiv_categories.split(",") if c.strip()]

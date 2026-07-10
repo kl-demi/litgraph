@@ -135,6 +135,46 @@ def enrich(
     console.print(f"[green]Enriched {total} papers.[/green]")
 
 
+@app.command("runs")
+def runs(
+    n: int = typer.Option(20, "--n", help="Number of most recent runs to show"),
+    job: str = typer.Option(
+        None, "--job", help="Filter to one job type, e.g. backload, fetch-daily, enrich"
+    ),
+) -> None:
+    """Show recent ingestion runs (backload/fetch-daily/enrich/...) with counts and date ranges."""
+    from litgraph.run_log import read_runs
+
+    records = read_runs()
+    if job:
+        records = [r for r in records if r["job"] == job]
+    records = records[-n:]
+
+    if not records:
+        console.print("[yellow]No runs logged yet.[/yellow]")
+        return
+
+    table = Table()
+    for col in ("started_at", "job", "total_papers", "date_range", "duration_seconds"):
+        table.add_column(col)
+    for r in records:
+        date_range = (
+            f"{r.get('requested_start_date') or '?'} → {r.get('requested_end_date') or '?'}"
+            if "requested_start_date" in r or "requested_end_date" in r
+            else f"{r.get('since_checkpoint') or '?'} → {r.get('newest_seen') or '?'}"
+            if "since_checkpoint" in r or "newest_seen" in r
+            else "-"
+        )
+        table.add_row(
+            r["started_at"],
+            r["job"],
+            str(r["total_papers"]),
+            date_range,
+            f"{r['duration_seconds']}s",
+        )
+    console.print(table)
+
+
 @app.command()
 def citations(
     paper_id: str = typer.Argument(..., help="An arXiv id (e.g. 2101.00001) or a PubMed PMID (e.g. 12345678)"),

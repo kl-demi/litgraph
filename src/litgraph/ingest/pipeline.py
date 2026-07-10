@@ -16,6 +16,7 @@ from litgraph.ingest.pubmed_source import get_checkpoint as get_pubmed_checkpoin
 from litgraph.ingest.pubmed_source import set_checkpoint as set_pubmed_checkpoint
 from litgraph.ingest.semantic_scholar import SemanticScholarClient
 from litgraph.models import Paper
+from litgraph.run_log import log_run
 
 console = Console()
 
@@ -58,6 +59,7 @@ def run_backload(
     batch_size: int = 200,
 ) -> int:
     """Stream the Kaggle snapshot, embed, and upsert matching papers. Returns count ingested."""
+    started_at = datetime.now()
     batch: list[Paper] = []
     total = 0
     earliest: date | None = None
@@ -86,11 +88,24 @@ def run_backload(
             progress.update(task, completed=total)
 
     console.log(f"backload: done, {total} papers upserted, batch spans {earliest} to {latest}")
+    log_run(
+        "backload",
+        started_at,
+        datetime.now(),
+        total,
+        categories=categories,
+        requested_start_date=start_date.isoformat() if start_date else None,
+        requested_end_date=end_date.isoformat() if end_date else None,
+        earliest_published=earliest.isoformat() if earliest else None,
+        latest_published=latest.isoformat() if latest else None,
+        limit=limit,
+    )
     return total
 
 
 def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
     """Fetch new papers since the last checkpoint, embed, and upsert. Returns count ingested."""
+    started_at = datetime.now()
     since = get_checkpoint()
     console.log(f"fetch-daily: last checkpoint = {since}")
 
@@ -121,6 +136,15 @@ def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
     if newest_seen is not None:
         set_checkpoint(newest_seen)
     console.log(f"fetch-daily: done, {total} new papers upserted")
+    log_run(
+        "fetch-daily",
+        started_at,
+        datetime.now(),
+        total,
+        categories=categories,
+        since_checkpoint=since.isoformat() if since else None,
+        newest_seen=newest_seen.isoformat() if newest_seen else None,
+    )
     return total
 
 
@@ -133,6 +157,7 @@ def run_backload_pubmed(
     batch_size: int = 200,
 ) -> int:
     """Stream NCBI's PubMed baseline files, embed, and upsert matching papers. Returns count ingested."""
+    started_at = datetime.now()
     batch: list[Paper] = []
     total = 0
     earliest: date | None = None
@@ -161,11 +186,24 @@ def run_backload_pubmed(
             progress.update(task, completed=total)
 
     console.log(f"backload-pubmed: done, {total} papers upserted, batch spans {earliest} to {latest}")
+    log_run(
+        "backload-pubmed",
+        started_at,
+        datetime.now(),
+        total,
+        mesh_terms=mesh_terms,
+        requested_start_date=start_date.isoformat() if start_date else None,
+        requested_end_date=end_date.isoformat() if end_date else None,
+        earliest_published=earliest.isoformat() if earliest else None,
+        latest_published=latest.isoformat() if latest else None,
+        limit=limit,
+    )
     return total
 
 
 def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     """Fetch new PubMed papers since the last checkpoint, embed, and upsert. Returns count ingested."""
+    started_at = datetime.now()
     since = get_pubmed_checkpoint()
     console.log(f"fetch-daily-pubmed: last checkpoint = {since}")
 
@@ -196,14 +234,25 @@ def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     if newest_seen is not None:
         set_pubmed_checkpoint(newest_seen)
     console.log(f"fetch-daily-pubmed: done, {total} new papers upserted")
+    log_run(
+        "fetch-daily-pubmed",
+        started_at,
+        datetime.now(),
+        total,
+        mesh_terms=mesh_terms,
+        since_checkpoint=since.isoformat() if since else None,
+        newest_seen=newest_seen.isoformat() if newest_seen else None,
+    )
     return total
 
 
 def run_enrichment(limit: int = 500) -> int:
     """Enrich up to ``limit`` not-yet-enriched papers with Semantic Scholar citation data."""
+    started_at = datetime.now()
     rows = run_read(_FIND_UNENRICHED, limit=limit)
     if not rows:
         console.log("enrich: nothing to do")
+        log_run("enrich", started_at, datetime.now(), 0, limit=limit, skipped=0)
         return 0
 
     arxiv_pairs = [(r["id"], r["arxiv_id"]) for r in rows if r["arxiv_id"]]
@@ -226,4 +275,5 @@ def run_enrichment(limit: int = 500) -> int:
         f"enrich: enriched {enriched_total}/{total} papers"
         + (f" ({skipped} not found in Semantic Scholar)" if skipped else "")
     )
+    log_run("enrich", started_at, datetime.now(), enriched_total, limit=limit, skipped=skipped)
     return enriched_total
