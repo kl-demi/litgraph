@@ -56,12 +56,25 @@ def _get_model():
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of title+abstract strings. Loads the model lazily on first call."""
+    """Embed a batch of title+abstract strings. Delegates to a remote GPU embedding
+    server if settings.embedding_service_url is set; otherwise loads the model
+    in-process, lazily, on first call."""
     if not texts:
         return []
+    settings = get_settings()
+    if settings.embedding_service_url:
+        return _embed_remote(texts, settings.embedding_service_url)
     model = _get_model()
     vectors = model.encode(texts, normalize_embeddings=True)
     return [list(v) for v in vectors]
+
+
+def _embed_remote(texts: list[str], service_url: str) -> list[list[float]]:
+    import httpx
+
+    response = httpx.post(f"{service_url}/embed", json={"texts": texts}, timeout=120)
+    response.raise_for_status()
+    return response.json()["vectors"]
 
 
 def paper_embedding_text(title: str, abstract: str) -> str:

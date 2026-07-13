@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     embedding_model_name: str = "allenai/specter2_base"
     embedding_adapter_name: str = "allenai/specter2"
     embedding_dimensions: int = 768
+    # When set, embed_texts() delegates to a remote GPU embedding server (e.g. the
+    # RunPod pod running scripts/runpod_embedding_server.py) instead of loading the
+    # model in-process. e.g. "http://100.x.x.x:8000".
+    embedding_service_url: str | None = None
 
     default_arxiv_categories: str = "cs.CL,cs.LG,cs.AI"
 
