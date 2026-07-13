@@ -72,7 +72,13 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def _embed_remote(texts: list[str], service_url: str) -> list[list[float]]:
     import httpx
 
-    response = httpx.post(f"{service_url}/embed", json={"texts": texts}, timeout=120)
+    settings = get_settings()
+    headers = {}
+    if settings.embedding_service_token:
+        headers["Authorization"] = f"Bearer {settings.embedding_service_token}"
+    response = httpx.post(
+        f"{service_url}/embed", json={"texts": texts}, headers=headers, timeout=120
+    )
     response.raise_for_status()
     return response.json()["vectors"]
 

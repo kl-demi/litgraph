@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # RunPod pod running scripts/runpod_embedding_server.py) instead of loading the
     # model in-process. e.g. "http://100.x.x.x:8000".
     embedding_service_url: str | None = None
+    # Shared secret the embedding server requires via "Authorization: Bearer <token>".
+    # Required in practice once the server is reachable from the public internet (see
+    # scripts/runpod_embedding_server.py) - there's no other access control on it.
+    embedding_service_token: str | None = None
 
     default_arxiv_categories: str = "cs.CL,cs.LG,cs.AI"
 
