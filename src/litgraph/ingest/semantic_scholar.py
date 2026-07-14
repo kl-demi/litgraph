@@ -96,6 +96,11 @@ class SemanticScholarClient:
         if response.status_code == 429:
             retry_after = float(response.headers.get("Retry-After", 5))
             time.sleep(retry_after)
+        elif response.status_code == 400 and response.json().get("error") == "No valid paper ids given":
+            # Whole batch unrecognized by Semantic Scholar - e.g. very recently
+            # published papers it hasn't indexed yet. S2 returns this as a batch 
+            # of not-found results.
+            return [None] * len(external_ids)
         response.raise_for_status()
         return response.json()
 
