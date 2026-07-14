@@ -166,6 +166,7 @@ def _paper_params(paper: Paper) -> dict:
     return {
         "id": paper.id,
         "arxiv_id": paper.arxiv_id,
+        "pmid": paper.pmid,
         "s2_paper_id": paper.s2_paper_id,
         "title": paper.title,
         "abstract": paper.abstract,

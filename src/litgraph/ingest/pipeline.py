@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -12,6 +12,7 @@ from litgraph.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_c
 from litgraph.ingest.embeddings import embed_texts, paper_embedding_text
 from litgraph.ingest.kaggle_source import iter_kaggle_papers
 from litgraph.ingest.pubmed_baseline_source import iter_pubmed_baseline_papers
+from litgraph.ingest.pubmed_source import fetch_historical_papers as fetch_historical_pubmed_papers
 from litgraph.ingest.pubmed_source import fetch_new_papers as fetch_new_pubmed_papers
 from litgraph.ingest.pubmed_source import get_checkpoint as get_pubmed_checkpoint
 from litgraph.ingest.pubmed_source import set_checkpoint as set_pubmed_checkpoint
@@ -37,6 +38,12 @@ WHERE p.is_stub = false AND p.enriched_at IS NULL
 RETURN p.id AS id, p.arxiv_id AS arxiv_id, p.pmid AS pmid
 LIMIT $limit
 """
+
+
+def _start_of_this_week() -> datetime:
+    """Monday 00:00 UTC of the current week."""
+    today_utc = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today_utc - timedelta(days=today_utc.weekday())
 
 
 def _embed_and_upsert(papers: list[Paper]) -> None:
@@ -107,8 +114,12 @@ def run_backload(
 def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
     """Fetch new papers since the last checkpoint, embed, and upsert. Returns count ingested."""
     started_at = datetime.now()
-    since = get_checkpoint()
-    console.log(f"fetch-daily: last checkpoint = {since}")
+    checkpoint = get_checkpoint()
+    since = checkpoint or _start_of_this_week()
+    if checkpoint is None:
+        console.log(f"fetch-daily: no checkpoint found, defaulting to start of this week ({since.isoformat()})")
+    else:
+        console.log(f"fetch-daily: last checkpoint = {since}")
 
     batch: list[Paper] = []
     total = 0
@@ -143,7 +154,7 @@ def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
         datetime.now(),
         total,
         categories=categories,
-        since_checkpoint=since.isoformat() if since else None,
+        since_checkpoint=checkpoint.isoformat() if checkpoint else None,
         newest_seen=newest_seen.isoformat() if newest_seen else None,
     )
     return total
@@ -202,11 +213,70 @@ def run_backload_pubmed(
     return total
 
 
+def run_backload_pubmed_api(
+    mesh_terms: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    batch_size: int = 200,
+) -> int:
+    """Historical backload of PubMed papers matching ``mesh_terms``, fetched entirely via
+    NCBI E-utilities (no bulk baseline files) -- NCBI filters server-side by the query,
+    so this only transfers matching records rather than the full corpus. Returns count
+    ingested."""
+    started_at = datetime.now()
+    batch: list[Paper] = []
+    total = 0
+    earliest: date | None = None
+    latest: date | None = None
+
+    with _progress(determinate=False) as progress:
+        task = progress.add_task("Backloading PubMed papers via API", total=None)
+        for paper in fetch_historical_pubmed_papers(
+            mesh_terms, start_date=start_date, end_date=end_date, batch_size=batch_size
+        ):
+            batch.append(paper)
+            published = paper.published_date
+            if published is not None:
+                if earliest is None or published < earliest:
+                    earliest = published
+                if latest is None or published > latest:
+                    latest = published
+            if len(batch) >= batch_size:
+                _embed_and_upsert(batch)
+                total += len(batch)
+                progress.update(task, completed=total)
+                batch = []
+        if batch:
+            _embed_and_upsert(batch)
+            total += len(batch)
+            progress.update(task, completed=total)
+
+    console.log(f"backload-pubmed-api: done, {total} papers upserted, batch spans {earliest} to {latest}")
+    log_run(
+        "backload-pubmed-api",
+        started_at,
+        datetime.now(),
+        total,
+        mesh_terms=mesh_terms,
+        requested_start_date=start_date.isoformat() if start_date else None,
+        requested_end_date=end_date.isoformat() if end_date else None,
+        earliest_published=earliest.isoformat() if earliest else None,
+        latest_published=latest.isoformat() if latest else None,
+    )
+    return total
+
+
 def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     """Fetch new PubMed papers since the last checkpoint, embed, and upsert. Returns count ingested."""
     started_at = datetime.now()
-    since = get_pubmed_checkpoint()
-    console.log(f"fetch-daily-pubmed: last checkpoint = {since}")
+    checkpoint = get_pubmed_checkpoint()
+    since = checkpoint or _start_of_this_week()
+    if checkpoint is None:
+        console.log(
+            f"fetch-daily-pubmed: no checkpoint found, defaulting to start of this week ({since.isoformat()})"
+        )
+    else:
+        console.log(f"fetch-daily-pubmed: last checkpoint = {since}")
 
     batch: list[Paper] = []
     total = 0
@@ -241,7 +311,7 @@ def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
         datetime.now(),
         total,
         mesh_terms=mesh_terms,
-        since_checkpoint=since.isoformat() if since else None,
+        since_checkpoint=checkpoint.isoformat() if checkpoint else None,
         newest_seen=newest_seen.isoformat() if newest_seen else None,
     )
     return total
