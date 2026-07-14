@@ -9,6 +9,7 @@ build/
 data/
 logs/
 .DS_Store
+.vscode/
 
 .claude/
 inspect_db.sql

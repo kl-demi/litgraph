@@ -227,6 +227,13 @@ def stats_latest(n: int = typer.Option(10, "--n", help="Number of papers to show
     from litgraph.search.stats import latest_papers
 
     _print_results(latest_papers(limit=n))
+    
+@stats_app.command("oldest")
+def stats_oldest(n: int = typer.Option(10, "--n", help="Number of papers to show")) -> None:
+    """Published dates of the latest N papers."""
+    from litgraph.search.stats import oldest_papers
+
+    _print_results(oldest_papers(limit=n))
 
 
 @stats_app.command("most-cited")
@@ -276,6 +283,16 @@ def stats_overview() -> None:
         table.add_row("Published date range", f"{data['earliest_published']} → {data['latest_published']}")
 
     console.print(Panel(table, title="litgraph snapshot", expand=False))
+
+
+@stats_app.command("rebuild")
+def stats_rebuild() -> None:
+    """Recompute the stats overview from scratch (full graph scan). Use to bootstrap
+    the counters on first use, or to correct drift."""
+    from litgraph.search.stats import rebuild_stats
+
+    rebuild_stats()
+    console.print("[green]Stats rebuilt.[/green]")
 
 
 

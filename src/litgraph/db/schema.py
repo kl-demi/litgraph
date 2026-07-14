@@ -2,13 +2,14 @@ from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
 
-_ARCADEDB_VERTEX_TYPES = ["Paper", "Category", "Author"]
+_ARCADEDB_VERTEX_TYPES = ["Paper", "Category", "Author", "GraphStats"]
 _ARCADEDB_EDGE_TYPES = ["CITES", "IN_CATEGORY", "AUTHORED"]
 
 _ARCADEDB_UNIQUE_INDEXES = [
     ("Paper", "id", "STRING"),
     ("Category", "code", "STRING"),
     ("Author", "name", "STRING"),
+    ("GraphStats", "id", "STRING"),
 ]
 
 _ARCADEDB_RANGE_INDEXES = [
@@ -16,12 +17,14 @@ _ARCADEDB_RANGE_INDEXES = [
     ("Paper", "pmid", "STRING"),
     ("Paper", "s2_paper_id", "STRING"),
     ("Paper", "enriched_at", "DATETIME"),
+    ("Paper", "is_stub", "BOOLEAN"),
 ]
 
 _CONSTRAINTS = [
     "CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE",
     "CREATE CONSTRAINT category_code IF NOT EXISTS FOR (c:Category) REQUIRE c.code IS UNIQUE",
     "CREATE CONSTRAINT author_name IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
+    "CREATE CONSTRAINT graphstats_id IF NOT EXISTS FOR (g:GraphStats) REQUIRE g.id IS UNIQUE",
 ]
 
 _RANGE_INDEXES = [
@@ -29,6 +32,7 @@ _RANGE_INDEXES = [
     "CREATE INDEX paper_pmid IF NOT EXISTS FOR (p:Paper) ON (p.pmid)",
     "CREATE INDEX paper_s2_id IF NOT EXISTS FOR (p:Paper) ON (p.s2_paper_id)",
     "CREATE INDEX paper_enriched_at IF NOT EXISTS FOR (p:Paper) ON (p.enriched_at)",
+    "CREATE INDEX paper_is_stub IF NOT EXISTS FOR (p:Paper) ON (p.is_stub)",
 ]
 
 _FULLTEXT_INDEX = """
