@@ -2,7 +2,7 @@ import time
 from datetime import UTC, datetime
 
 import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked
@@ -26,6 +26,20 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return isinstance(exc, httpx.TransportError)
+
+
+def _wait_for_retry(retry_state) -> float:
+    """On a 429, honor the server's Retry-After header instead of guessing via
+    exponential backoff - S2 tells us exactly how long it wants us to wait."""
+    exc = retry_state.outcome.exception()
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        retry_after = exc.response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+    return wait_exponential(multiplier=1, min=1, max=30)(retry_state)
 
 
 def _stub_from(entry: dict | None) -> CitationStub | None:
@@ -82,8 +96,8 @@ class SemanticScholarClient:
 
     @retry(
         retry=retry_if_exception(_is_retryable),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(5),
+        wait=_wait_for_retry,
+        stop=stop_after_attempt(8) | stop_after_delay(180),
         reraise=True,
     )
     def _post_batch(self, external_ids: list[str], id_prefix: str) -> list[dict | None]:
@@ -93,12 +107,9 @@ class SemanticScholarClient:
             params={"fields": _FIELDS},
             json={"ids": [f"{id_prefix}:{i}" for i in external_ids]},
         )
-        if response.status_code == 429:
-            retry_after = float(response.headers.get("Retry-After", 5))
-            time.sleep(retry_after)
-        elif response.status_code == 400 and response.json().get("error") == "No valid paper ids given":
+        if response.status_code == 400 and response.json().get("error") == "No valid paper ids given":
             # Whole batch unrecognized by Semantic Scholar - e.g. very recently
-            # published papers it hasn't indexed yet. S2 returns this as a batch 
+            # published papers it hasn't indexed yet. S2 returns this as a batch
             # of not-found results.
             return [None] * len(external_ids)
         response.raise_for_status()

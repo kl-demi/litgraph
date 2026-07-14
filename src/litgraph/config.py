@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     semantic_scholar_api_key: str | None = None
     semantic_scholar_base_url: str = "https://api.semanticscholar.org/graph/v1"
-    semantic_scholar_batch_size: int = 500
+    semantic_scholar_batch_size: int = 100
     semantic_scholar_requests_per_second: float = 1.0
 
     embedding_model_name: str = "allenai/specter2_base"

@@ -128,7 +128,7 @@ def fetch_daily_pubmed(
 
 @app.command()
 def enrich(
-    limit: int = typer.Option(1000, "--limit", help="Max not-yet-enriched papers to process"),
+    limit: int = typer.Option(500, "--limit", help="Max not-yet-enriched papers to process"),
 ) -> None:
     """Enrich papers with Semantic Scholar citation data."""
     total = run_enrichment(limit=limit)

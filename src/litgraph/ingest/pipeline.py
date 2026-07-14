@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from pathlib import Path
 
+import httpx
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
@@ -265,7 +266,12 @@ def run_enrichment(limit: int = 500) -> int:
         task = progress.add_task("Enriching papers", total=total)
         for pairs, id_prefix in ((arxiv_pairs, "ARXIV"), (pmid_pairs, "PMID")):
             for batch in chunked(pairs, batch_size):
-                results = client.enrich(batch, id_prefix=id_prefix)
+                try:
+                    results = client.enrich(batch, id_prefix=id_prefix)
+                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    console.log(f"enrich: batch of {len(batch)} failed after retries, skipping ({exc})")
+                    progress.update(task, advance=len(batch))
+                    continue
                 apply_enrichment(results)
                 enriched_total += len(results)
                 progress.update(task, advance=len(batch))
