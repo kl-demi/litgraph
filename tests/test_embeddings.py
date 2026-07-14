@@ -1,3 +1,4 @@
+import httpx
 import numpy as np
 
 from litgraph.ingest import embeddings
@@ -6,6 +7,44 @@ from litgraph.ingest import embeddings
 class FakeModel:
     def encode(self, texts, **kwargs):
         return np.array([[float(len(t)), 0.0, 1.0] for t in texts])
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "http://fake/embed")
+            raise httpx.HTTPStatusError("error", request=request, response=self)
+
+
+def test_embed_remote_retries_on_502_then_succeeds(mocker):
+    mocker.patch("time.sleep")
+    responses = [FakeResponse(502), FakeResponse(200, {"vectors": [[1.0, 2.0]]})]
+    mock_post = mocker.patch("httpx.post", side_effect=responses)
+
+    vectors = embeddings._embed_remote(["some text"], "http://fake-embedding-service")
+
+    assert vectors == [[1.0, 2.0]]
+    assert mock_post.call_count == 2
+
+
+def test_embed_remote_gives_up_after_persistent_502(mocker):
+    mocker.patch("time.sleep")
+    mocker.patch("httpx.post", return_value=FakeResponse(502))
+
+    try:
+        embeddings._embed_remote(["some text"], "http://fake-embedding-service")
+        raised = False
+    except httpx.HTTPStatusError:
+        raised = True
+
+    assert raised
 
 
 def test_embed_texts_returns_list_of_lists(mocker):

@@ -120,7 +120,12 @@ class SemanticScholarClient:
         enriched_at = datetime.now(UTC)
         out: list[EnrichmentResult] = []
         for (paper_id, _), item in zip(pairs, items, strict=True):
+            # Always emit a result -- even a "not found in S2" paper must get
+            # `enriched_at` stamped, or it keeps reappearing at the front of
+            # _FIND_UNENRICHED's result window on every future `enrich` run,
+            # starving papers that haven't been attempted yet.
             if not item:
+                out.append(EnrichmentResult(paper_id=paper_id, enriched_at=enriched_at))
                 continue
             references = [s for s in (_stub_from(r) for r in item.get("references") or []) if s]
             citations = [s for s in (_stub_from(c) for c in item.get("citations") or []) if s]

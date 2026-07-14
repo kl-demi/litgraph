@@ -44,15 +44,21 @@ def test_enrich_maps_references_and_citations(mocker):
 
     results = client.enrich([("2101.00001", "2101.00001"), ("2101.99999", "2101.99999")], id_prefix="ARXIV")
 
-    assert len(results) == 1
-    result = results[0]
-    assert result.paper_id == "2101.00001"
+    # Both papers get a result now, even the one S2 doesn't recognize -- otherwise it
+    # never gets `enriched_at` stamped and keeps reappearing in every future enrich run.
+    assert len(results) == 2
+    result = next(r for r in results if r.paper_id == "2101.00001")
     assert result.s2_paper_id == "s2-1"
     assert result.citation_count == 5
     assert len(result.references) == 1
     assert result.references[0].arxiv_id == "2001.00001"
     assert len(result.citations) == 1
     assert result.citations[0].s2_paper_id == "s2-3"
+
+    not_found = next(r for r in results if r.paper_id == "2101.99999")
+    assert not_found.s2_paper_id is None
+    assert not_found.citation_count is None
+    assert not_found.enriched_at is not None
 
     kwargs = mock_post.call_args.kwargs
     assert kwargs["json"]["ids"] == ["ARXIV:2101.00001", "ARXIV:2101.99999"]

@@ -1,6 +1,16 @@
 from functools import lru_cache
 
+from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+
 from litgraph.config import get_settings
+
+
+def _is_retryable_embedding_error(exc: BaseException) -> bool:
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
 
 
 class _AdapterEmbedder:
@@ -69,6 +79,12 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [list(v) for v in vectors]
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable_embedding_error),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(6) | stop_after_delay(180),
+    reraise=True,
+)
 def _embed_remote(texts: list[str], service_url: str) -> list[list[float]]:
     import httpx
 
