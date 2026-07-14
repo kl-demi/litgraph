@@ -1,5 +1,6 @@
+import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 
@@ -80,6 +81,44 @@ def _efetch(client: httpx.Client, pmids: list[str]) -> bytes:
     return response.content
 
 
+def _esearch_with_history(
+    client: httpx.Client, mesh_terms: str, start_date: date | None, end_date: date | None
+) -> tuple[str, str, int]:
+    """Run esearch with ``usehistory=y`` so the full matching set is stored server-side
+    (NCBI's history server), sidestepping esearch's own 10,000-result retmax cap --
+    efetch can then page through the whole set via ``retstart``.
+
+    Returns (web_env, query_key, total_count).
+    """
+    params = {
+        **_entrez_params(),
+        "db": "pubmed",
+        "term": mesh_terms,
+        "retmode": "json",
+        "retmax": 0,
+        "usehistory": "y",
+        "datetype": "pdat",
+    }
+    if start_date is not None:
+        params["mindate"] = start_date.strftime("%Y/%m/%d")
+    if end_date is not None:
+        params["maxdate"] = end_date.strftime("%Y/%m/%d")
+    response = client.get("/esearch.fcgi", params=params)
+    response.raise_for_status()
+    result = response.json()["esearchresult"]
+    return result["webenv"], result["querykey"], int(result["count"])
+
+
+def _efetch_history_batch(client: httpx.Client, web_env: str, query_key: str, retstart: int, retmax: int) -> bytes:
+    response = client.post(
+        "/efetch.fcgi",
+        params={**_entrez_params(), "db": "pubmed", "retmode": "xml"},
+        data={"WebEnv": web_env, "query_key": query_key, "retstart": retstart, "retmax": retmax},
+    )
+    response.raise_for_status()
+    return response.content
+
+
 def _result_to_paper(fields: dict) -> Paper:
     return Paper(
         pmid=fields["pmid"],
@@ -113,6 +152,44 @@ def fetch_new_papers(
         pmids = _esearch(client, mesh_terms, since, max_results)
         for batch in chunked(pmids, _EFETCH_BATCH_SIZE):
             xml_bytes = _efetch(client, batch)
+            for article_el in iter_pubmed_articles(xml_bytes):
+                fields = parse_pubmed_article(article_el)
+                if fields["pmid"]:
+                    yield _result_to_paper(fields)
+
+
+def fetch_historical_papers(
+    mesh_terms: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    batch_size: int = 200,
+) -> Iterator[Paper]:
+    """Fetch *all* PubMed papers matching ``mesh_terms`` (optionally within a date range),
+    via NCBI's history server (``usehistory=y`` + ``retstart`` pagination), rather than
+    a single esearch call -- which caps at 10,000 results regardless of the requested
+    ``retmax``. Intended for a full historical backload scoped by MeSH terms, as an
+    alternative to downloading NCBI's bulk baseline files when disk space is tight,
+    since NCBI filters by the query server-side before anything is sent.
+
+    Requires ``ncbi_email``/``ncbi_api_key`` to be set; rate-limited to the NCBI-documented
+    ceiling (10 req/sec with an API key, 3 req/sec without).
+    """
+    settings = get_settings()
+    requests_per_second = 10.0 if settings.ncbi_api_key else 3.0
+    min_interval = 1.0 / requests_per_second
+    last_request_at: float | None = None
+
+    with httpx.Client(base_url=settings.ncbi_eutils_base_url, timeout=30.0) as client:
+        web_env, query_key, count = _esearch_with_history(client, mesh_terms, start_date, end_date)
+
+        for retstart in range(0, count, batch_size):
+            if last_request_at is not None:
+                elapsed = time.monotonic() - last_request_at
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+            xml_bytes = _efetch_history_batch(client, web_env, query_key, retstart, batch_size)
+            last_request_at = time.monotonic()
+
             for article_el in iter_pubmed_articles(xml_bytes):
                 fields = parse_pubmed_article(article_el)
                 if fields["pmid"]:

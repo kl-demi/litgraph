@@ -10,6 +10,7 @@ from litgraph.db.schema import ensure_schema
 from litgraph.ingest.pipeline import (
     run_backload,
     run_backload_pubmed,
+    run_backload_pubmed_api,
     run_daily_fetch,
     run_daily_fetch_pubmed,
     run_enrichment,
@@ -112,6 +113,26 @@ def backload_pubmed(
         batch_size=batch_size,
     )
     console.print(f"[green]Backloaded {total} PubMed papers.[/green]")
+
+
+@app.command("backload-pubmed-api")
+def backload_pubmed_api(
+    mesh_terms: str = typer.Option(None, "--mesh-terms", help="PubMed query string, e.g. a MeSH term expression"),
+    start_date: str = typer.Option(None, "--start-date", help="YYYY-MM-DD"),
+    end_date: str = typer.Option(None, "--end-date", help="YYYY-MM-DD"),
+    batch_size: int = typer.Option(200, "--batch-size"),
+) -> None:
+    """Historical backload of PubMed papers via NCBI E-utilities (no bulk file download --
+    NCBI filters server-side by --mesh-terms, so only matching records are transferred)."""
+    settings = get_settings()
+    query = mesh_terms or settings.default_pubmed_mesh_terms
+    total = run_backload_pubmed_api(
+        query,
+        start_date=_parse_date(start_date),
+        end_date=_parse_date(end_date),
+        batch_size=batch_size,
+    )
+    console.print(f"[green]Backloaded {total} PubMed papers via API.[/green]")
 
 
 @app.command("fetch-daily-pubmed")
