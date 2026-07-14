@@ -50,7 +50,16 @@ def _embed_and_upsert(papers: list[Paper]) -> None:
     if not papers:
         return
     texts = [paper_embedding_text(p.title, p.abstract) for p in papers]
-    vectors = embed_texts(texts)
+    try:
+        vectors = embed_texts(texts)
+    except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+        # Upsert without embeddings to avoid losing this whole batch to a 
+        # transient embedding-service outage.
+        # scripts/backfill_embeddings.py finds and re-embeds any Paper with embedding IS
+        # NULL later, so this is recoverable rather than a silent permanent gap.
+        console.log(f"embed: service unavailable after retries, upserting {len(papers)} papers without embeddings ({exc})")
+        upsert_papers(papers)
+        return
     now = datetime.now()
     for paper, vector in zip(papers, vectors, strict=True):
         paper.embedding = vector
@@ -331,6 +340,7 @@ def run_enrichment(limit: int = 500) -> int:
 
     batch_size = get_settings().semantic_scholar_batch_size
     enriched_total = 0
+    not_found_total = 0
     total = len(arxiv_pairs) + len(pmid_pairs)
     with SemanticScholarClient() as client, _progress() as progress:
         task = progress.add_task("Enriching papers", total=total)
@@ -342,14 +352,18 @@ def run_enrichment(limit: int = 500) -> int:
                     console.log(f"enrich: batch of {len(batch)} failed after retries, skipping ({exc})")
                     progress.update(task, advance=len(batch))
                     continue
+                # Every requested paper gets a result now (client.enrich() no longer drops
+                # not-found papers) -- apply_enrichment() stamps enriched_at on all of them,
+                # found or not, so a "not found in S2" paper doesn't keep reappearing at
+                # the front of _FIND_UNENRICHED's LIMIT window on every future run.
                 apply_enrichment(results)
                 enriched_total += len(results)
+                not_found_total += sum(1 for r in results if r.s2_paper_id is None)
                 progress.update(task, advance=len(batch))
 
-    skipped = total - enriched_total
     console.log(
-        f"enrich: enriched {enriched_total}/{total} papers"
-        + (f" ({skipped} not found in Semantic Scholar)" if skipped else "")
+        f"enrich: processed {enriched_total}/{total} papers"
+        + (f" ({not_found_total} not found in Semantic Scholar)" if not_found_total else "")
     )
-    log_run("enrich", started_at, datetime.now(), enriched_total, limit=limit, skipped=skipped)
+    log_run("enrich", started_at, datetime.now(), enriched_total, limit=limit, not_found=not_found_total)
     return enriched_total
