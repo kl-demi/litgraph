@@ -48,6 +48,31 @@ def _print_results(rows: list[dict]) -> None:
         table.add_row(*[str(row.get(key, "")) for key in rows[0]])
     console.print(table)
 
+
+def _print_search_results(rows: list[dict]) -> None:
+    """Search-engine-style list: title, then a metadata line, then an abstract
+    snippet — unlike `_print_results`, this avoids cramming full abstracts into a
+    table column."""
+    if not rows:
+        console.print("[yellow]No results.[/yellow]")
+        return
+    for i, row in enumerate(rows, start=1):
+        ident = row.get("arxiv_id") or row.get("pmid") or row.get("id")
+        meta = [str(ident)]
+        score = row.get("score")
+        if score is not None:
+            meta.append(f"score: {score:.3f}" if isinstance(score, float) else f"score: {score}")
+        categories = row.get("categories")
+        if categories:
+            meta.append(", ".join(categories) if isinstance(categories, list) else str(categories))
+        console.print(f"[bold]{i}. {(row.get('title') or '').strip()}[/bold]")
+        console.print(f"[dim]{'  |  '.join(meta)}[/dim]")
+        abstract = (row.get("abstract") or "").strip()
+        if abstract:
+            snippet = abstract if len(abstract) <= 400 else abstract[:400].rsplit(" ", 1)[0] + "…"
+            console.print(snippet)
+        console.print()
+
 # -------------------------------- MAIN APP ------------------------------------
 @app.command("init-db")
 def init_db() -> None:
@@ -222,14 +247,14 @@ def citations(
 def search_keyword(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
     from litgraph.search.keyword import keyword_search
 
-    _print_results(keyword_search(query, top_k=top_k))
+    _print_search_results(keyword_search(query, top_k=top_k))
 
 
 @search_app.command("semantic")
 def search_semantic(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
     from litgraph.search.semantic import semantic_search
 
-    _print_results(semantic_search(query, top_k=top_k))
+    _print_search_results(semantic_search(query, top_k=top_k))
 
 
 
@@ -291,6 +316,8 @@ def stats_overview() -> None:
     table.add_row("Papers", str(data["papers"]))
     table.add_row("     enriched (citation data)", pct(data["enriched"], data["papers"]))
     table.add_row("     embedded (semantic search)", pct(data["embedded"], data["papers"]))
+    for row in data["by_source"]:
+        table.add_row(f"     {row['source']}", f"{row['papers']} ingested, {pct(row['enriched'], row['papers'])} enriched")
     table.add_row("Citation-graph stub papers", str(data["stubs"]))
     table.add_row("Authors", str(data["authors"]))
     table.add_row("Categories", str(data["categories"]))

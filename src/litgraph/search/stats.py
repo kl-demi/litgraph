@@ -38,6 +38,21 @@ ORDER BY paper_count DESC
 LIMIT 1
 """
 
+# Not counter-backed (unlike the GraphStats singleton fields above) — a small live
+# scan grouped by source family. "kaggle"/"pubmed_baseline" are the bulk-backload
+# routes for the arxiv/pubmed corpora respectively, so they're folded into their
+# parent family rather than shown as separate rows.
+_SOURCE_BREAKDOWN = """
+MATCH (p:Paper)
+WHERE p.is_stub = false
+RETURN CASE WHEN p.source IN ['arxiv', 'kaggle'] THEN 'arxiv'
+            WHEN p.source IN ['pubmed', 'pubmed_baseline'] THEN 'pubmed'
+            ELSE p.source END AS source,
+       count(p) AS papers,
+       count(CASE WHEN p.enriched_at IS NOT NULL THEN 1 END) AS enriched
+ORDER BY papers DESC
+"""
+
 # Ingested papers only (is_stub = false) — citation-graph stub placeholders (papers
 # referenced/citing but never ingested themselves) are counted separately, since they
 # have no title/abstract/authors/etc. and would otherwise inflate "papers".
@@ -152,8 +167,9 @@ def overview() -> dict:
 
     top_category_rows = run_read(_TOP_CATEGORY)
     top_category = top_category_rows[0] if top_category_rows else None
+    by_source = run_read(_SOURCE_BREAKDOWN)
 
-    return {**rows[0], "top_category": top_category}
+    return {**rows[0], "top_category": top_category, "by_source": by_source}
 
 
 def rebuild_stats() -> None:
