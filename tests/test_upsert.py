@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from litgraph.graph import upsert
 from litgraph.models import CitationStub, EnrichmentResult, Paper
 
@@ -122,4 +124,35 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
 def test_apply_enrichment_noop_on_empty(mocker):
     mock_run_write = mocker.patch.object(upsert, "run_write")
     upsert.apply_enrichment([])
+    mock_run_write.assert_not_called()
+
+
+def test_upsert_paper_stubs_includes_pmid(mocker):
+    mock_run_write = _mock_run_write(mocker)
+    stubs = [CitationStub(pmid="12345678", title="A PubMed paper")]
+
+    upsert.upsert_paper_stubs(stubs)
+
+    stub_params = mock_run_write.call_args_list[0].kwargs["stubs"][0]
+    assert stub_params["id"] == "pmid:12345678"
+    assert stub_params["pmid"] == "12345678"
+
+
+def test_set_paper_embeddings_writes_and_bumps_stats(mocker):
+    mock_run_write = mocker.patch.object(upsert, "run_write")
+    now = datetime(2024, 1, 1, 12, 0, 0)
+
+    upsert.set_paper_embeddings([("2101.00001", [0.1, 0.2])], now)
+
+    embed_call, stats_call = mock_run_write.call_args_list
+    embedding_param = embed_call.kwargs["embeddings"][0]
+    assert embedding_param["id"] == "2101.00001"
+    assert embedding_param["embedding"] == [0.1, 0.2]
+    assert embedding_param["embedded_at"] == now.isoformat()
+    assert stats_call.kwargs["newly_embedded_count"] == 1
+
+
+def test_set_paper_embeddings_noop_on_empty(mocker):
+    mock_run_write = mocker.patch.object(upsert, "run_write")
+    upsert.set_paper_embeddings([], datetime.now())
     mock_run_write.assert_not_called()

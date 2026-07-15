@@ -7,7 +7,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked, run_read
-from litgraph.graph.upsert import apply_enrichment, upsert_papers
+from litgraph.graph.upsert import apply_enrichment, set_paper_embeddings, upsert_papers
 from litgraph.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_checkpoint
 from litgraph.ingest.embeddings import embed_texts, paper_embedding_text
 from litgraph.ingest.kaggle_source import iter_kaggle_papers
@@ -36,6 +36,13 @@ MATCH (p:Paper)
 WHERE p.is_stub = false AND p.enriched_at IS NULL
   AND (p.arxiv_id IS NOT NULL OR p.pmid IS NOT NULL)
 RETURN p.id AS id, p.arxiv_id AS arxiv_id, p.pmid AS pmid
+LIMIT $limit
+"""
+
+_FIND_MISSING_EMBEDDINGS = """
+MATCH (p:Paper)
+WHERE p.is_stub = false AND p.embedding IS NULL
+RETURN p.id AS id, p.title AS title, p.abstract AS abstract
 LIMIT $limit
 """
 
@@ -367,3 +374,33 @@ def run_enrichment(limit: int = 500) -> int:
     )
     log_run("enrich", started_at, datetime.now(), enriched_total, limit=limit, not_found=not_found_total)
     return enriched_total
+
+
+def run_backfill_embeddings(batch_size: int = 200) -> int:
+    """Embed any fully-ingested paper that's missing an embedding -- e.g. ones upserted
+    during an embedding-service outage by _embed_and_upsert()'s fallback path. Uses the
+    title/abstract already stored in the graph rather than re-fetching from an external
+    API, so it works regardless of source (arxiv, kaggle, pubmed, ...). Returns count
+    embedded."""
+    started_at = datetime.now()
+    total = 0
+    with _progress(determinate=False) as progress:
+        task = progress.add_task("Backfilling embeddings", total=None)
+        while True:
+            rows = run_read(_FIND_MISSING_EMBEDDINGS, limit=batch_size)
+            if not rows:
+                break
+            texts = [paper_embedding_text(r["title"] or "", r["abstract"] or "") for r in rows]
+            try:
+                vectors = embed_texts(texts)
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                console.log(f"backfill-embeddings: service unavailable after retries, stopping ({exc})")
+                break
+            now = datetime.now()
+            set_paper_embeddings([(r["id"], v) for r, v in zip(rows, vectors, strict=True)], now)
+            total += len(rows)
+            progress.update(task, completed=total)
+
+    console.log(f"backfill-embeddings: done, {total} papers embedded")
+    log_run("backfill-embeddings", started_at, datetime.now(), total, batch_size=batch_size)
+    return total

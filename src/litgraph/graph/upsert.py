@@ -161,6 +161,21 @@ MERGE (g:GraphStats {id: 'singleton'})
 SET g.enriched = coalesce(g.enriched, 0) + $newly_enriched_count
 """
 
+# Deliberately touches only embedding/embedded_at, unlike upsert_papers() which SETs
+# every Paper field unconditionally -- reusing upsert_papers() here to backfill a missing
+# embedding would require reconstructing every other field first, or risk silently
+# clobbering them back to blank (the exact bug backfill_authors.py caused previously).
+_SET_EMBEDDINGS = """
+UNWIND $embeddings AS e
+MATCH (paper:Paper {id: e.id})
+SET paper.embedding = e.embedding, paper.embedded_at = e.embedded_at
+"""
+
+_APPLY_EMBEDDING_STATS = """
+MERGE (g:GraphStats {id: 'singleton'})
+SET g.embedded = coalesce(g.embedded, 0) + $newly_embedded_count
+"""
+
 
 def _paper_params(paper: Paper) -> dict:
     return {
@@ -211,6 +226,7 @@ def upsert_paper_stubs(stubs: list[CitationStub]) -> None:
                 "id": s.id,
                 "title": s.title,
                 "arxiv_id": s.arxiv_id,
+                "pmid": s.pmid,
                 "s2_paper_id": s.s2_paper_id,
             }
             for s in deduped.values()
@@ -262,3 +278,18 @@ def apply_enrichment(results: list[EnrichmentResult]) -> None:
         ],
     )[0]
     run_write(_APPLY_ENRICHMENT_STATS, **enrichment_delta)
+
+
+def set_paper_embeddings(embeddings: list[tuple[str, list[float]]], embedded_at) -> None:
+    """Write embeddings for already-ingested papers (e.g. backfilling ones upserted
+    during an embedding-service outage). ``embeddings`` is a list of (paper_id, vector)."""
+    if not embeddings:
+        return
+    run_write(
+        _SET_EMBEDDINGS,
+        embeddings=[
+            {"id": paper_id, "embedding": vector, "embedded_at": embedded_at.isoformat()}
+            for paper_id, vector in embeddings
+        ],
+    )
+    run_write(_APPLY_EMBEDDING_STATS, newly_embedded_count=len(embeddings))

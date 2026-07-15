@@ -8,6 +8,7 @@ from rich.table import Table
 from litgraph.config import get_settings
 from litgraph.db.schema import ensure_schema
 from litgraph.ingest.pipeline import (
+    run_backfill_embeddings,
     run_backload,
     run_backload_pubmed,
     run_backload_pubmed_api,
@@ -179,6 +180,17 @@ def enrich(
     """Enrich papers with Semantic Scholar citation data."""
     total = run_enrichment(limit=limit)
     console.print(f"[green]Enriched {total} papers.[/green]")
+
+
+@app.command("backfill-embeddings")
+def backfill_embeddings(
+    batch_size: int = typer.Option(200, "--batch-size"),
+) -> None:
+    """Embed any ingested paper missing an embedding (e.g. from an embedding-service
+    outage during backload/fetch). Source-agnostic -- works for arXiv, Kaggle, and
+    PubMed papers alike, using title/abstract already in the graph."""
+    total = run_backfill_embeddings(batch_size=batch_size)
+    console.print(f"[green]Backfilled embeddings for {total} papers.[/green]")
 
 
 @app.command("runs")
