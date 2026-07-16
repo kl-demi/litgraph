@@ -51,7 +51,10 @@ def _post(endpoint: str, sql: str, params: dict) -> list[dict]:
     if params:
         body["params"] = params
     response = httpx.post(
-        url, json=body, auth=(settings.arcadedb_user, settings.arcadedb_password), timeout=30
+        url,
+        json=body,
+        auth=(settings.arcadedb_user, settings.arcadedb_password),
+        timeout=settings.arcadedb_http_timeout,
     )
     response.raise_for_status()
     return response.json().get("result", [])

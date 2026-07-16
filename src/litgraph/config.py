@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     arcadedb_database: str = "litgraph"
     arcadedb_user: str = "root"
     arcadedb_password: str = "playwithdata"
+    # Full-text/vector searches over the full Paper corpus can legitimately take
+    # 45-60s+ under this deployment's current server resources (see search timeout
+    # investigation, 2026-07-15) - 30s was cutting off queries that were still running.
+    arcadedb_http_timeout: float = 90.0
 
     # Only used when graph_backend == "neo4j".
     neo4j_uri: str = "bolt://localhost:7687"

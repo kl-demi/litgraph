@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -255,18 +256,40 @@ def citations(
         
 
 # ------------------------------- SEARCH APP -----------------------------------
+def _run_search(fn, query: str, top_k: int) -> None:
+    try:
+        _print_search_results(fn(query, top_k=top_k))
+    except httpx.TimeoutException:
+        console.print(
+            "[red]Search timed out.[/red] Over the full paper corpus, broad/common "
+            "query terms can take the server a long time (or exhaust its memory) to "
+            "score. Try a more specific query, or a smaller --top-k."
+        )
+        raise typer.Exit(1)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 500 and "heap space" in exc.response.text:
+            console.print(
+                "[red]Search failed: the ArcadeDB server ran out of memory[/red] "
+                "scoring this query over the full paper corpus. Try a more specific "
+                "query or a smaller --top-k; this data volume may also need more "
+                "heap on the server."
+            )
+            raise typer.Exit(1)
+        raise
+
+
 @search_app.command("keyword")
 def search_keyword(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
     from litgraph.search.keyword import keyword_search
 
-    _print_search_results(keyword_search(query, top_k=top_k))
+    _run_search(keyword_search, query, top_k)
 
 
 @search_app.command("semantic")
 def search_semantic(query: str, top_k: int = typer.Option(10, "--top-k")) -> None:
     from litgraph.search.semantic import semantic_search
 
-    _print_search_results(semantic_search(query, top_k=top_k))
+    _run_search(semantic_search, query, top_k)
 
 
 
