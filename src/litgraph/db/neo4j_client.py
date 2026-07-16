@@ -3,8 +3,20 @@ from functools import lru_cache
 from typing import Any
 
 from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import ClientError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from litgraph.config import get_settings
+
+# ArcadeDB's Bolt plugin is a community reimplementation of the protocol, not Neo4j
+# itself, and intermittently loses track of a transaction between its final query and
+# the driver's commit -- surfacing as this ClientError even though nothing is actually
+# wrong with the query or data (retrying the same transaction immediately succeeds).
+_TRANSACTION_NOT_FOUND = "Neo.ClientError.Transaction.TransactionNotFound"
+
+
+def _is_retryable_bolt_error(exc: BaseException) -> bool:
+    return isinstance(exc, ClientError) and exc.code == _TRANSACTION_NOT_FOUND
 
 
 @lru_cache
@@ -30,6 +42,12 @@ def _session_database() -> str | None:
     return settings.arcadedb_database
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable_bolt_error),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=5),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def run_write(cypher: str, **params: Any) -> list[dict]:
     driver = get_driver()
     with driver.session(database=_session_database()) as session:
@@ -37,6 +55,12 @@ def run_write(cypher: str, **params: Any) -> list[dict]:
         return [record.data() for record in result]
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable_bolt_error),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=5),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def run_read(cypher: str, **params: Any) -> list[dict]:
     driver = get_driver()
     with driver.session(database=_session_database()) as session:
