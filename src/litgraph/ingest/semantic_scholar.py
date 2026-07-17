@@ -2,11 +2,14 @@ import time
 from datetime import UTC, datetime
 
 import httpx
+from rich.console import Console
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked
 from litgraph.models import CitationStub, EnrichmentResult
+
+console = Console()
 
 _FIELDS = ",".join(
     [
@@ -40,6 +43,23 @@ def _wait_for_retry(retry_state) -> float:
             except ValueError:
                 pass
     return wait_exponential(multiplier=1, min=1, max=30)(retry_state)
+
+
+def _log_retry(retry_state) -> None:
+    """Surface S2 rate-limiting/outages, which otherwise burn minutes silently --
+    _wait_for_retry() honors Retry-After, so a 429 can mean a long, invisible wait."""
+    exc = retry_state.outcome.exception()
+    if isinstance(exc, httpx.HTTPStatusError):
+        reason = f"HTTP {exc.response.status_code}"
+        retry_after = exc.response.headers.get("Retry-After")
+        if exc.response.status_code == 429 and retry_after is not None:
+            reason += f", Retry-After: {retry_after}s"
+    else:
+        reason = type(exc).__name__
+    wait = retry_state.next_action.sleep if retry_state.next_action else 0
+    console.log(
+        f"semantic-scholar: {reason}, retrying in {wait:.1f}s (attempt {retry_state.attempt_number})"
+    )
 
 
 def _stub_from(entry: dict | None) -> CitationStub | None:
@@ -98,6 +118,7 @@ class SemanticScholarClient:
         retry=retry_if_exception(_is_retryable),
         wait=_wait_for_retry,
         stop=stop_after_attempt(8) | stop_after_delay(180),
+        before_sleep=_log_retry,
         reraise=True,
     )
     def _post_batch(self, external_ids: list[str], id_prefix: str) -> list[dict | None]:

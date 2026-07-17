@@ -30,7 +30,13 @@ def get_driver() -> Driver:
             settings.arcadedb_user,
             settings.arcadedb_password,
         )
-    return GraphDatabase.driver(uri, auth=(user, password))
+    # Ingestion commands (enrich, in particular) can go tens of seconds to a couple
+    # minutes between DB calls while paced/rate-limited by an external API -- long
+    # enough for a pooled Bolt connection to go stale and get silently dropped.
+    # Without this, the driver hands out the dead connection and callers see a
+    # confusing TransactionNotFound/"defunct connection" error instead of a clean
+    # reconnect.
+    return GraphDatabase.driver(uri, auth=(user, password), liveness_check_timeout=30)
 
 
 def _session_database() -> str | None:
