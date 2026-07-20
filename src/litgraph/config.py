@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     kaggle_dataset_path: str | None = None
 
     default_pubmed_mesh_terms: str = (
-        '"Anatomy"[MeSH Major Topic] OR "Phenomena and Processes"[MeSH Major Topic]'
+        '"Nervous system"[Mesh] OR "Mental disorders"[Mesh] OR "Information theory"[Mesh]'
     )
     pubmed_baseline_dir: str | None = None
 
