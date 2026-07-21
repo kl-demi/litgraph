@@ -1,3 +1,5 @@
+from litgraph.config import get_settings
+from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
 from litgraph.models import CitationStub, EnrichmentResult, Paper
 
@@ -128,6 +130,31 @@ MERGE (g:GraphStats {id: 'singleton'})
 SET g.stubs = coalesce(g.stubs, 0) + $new_stubs
 """
 
+# ArcadeDB equivalents of _UPSERT_STUBS/_UPSERT_CITATION_EDGES below, over the SQL/HTTP
+# API instead of Cypher/Bolt -- a batch of a few thousand MERGEs over Cypher/Bolt was
+# measured taking 100s+ (see enrich-performance investigation), consistent with the
+# ~100x Cypher-vs-SQL gap already documented in search/stats.py's _rebuild_edge_counts.
+# Plain `UPDATE ... UPSERT` can't be used for either: it would unconditionally overwrite
+# fields (incl. is_stub) on a match, which would corrupt an already-fully-ingested Paper
+# that happens to also be a citation stub target -- so both need an explicit
+# exists-check per row, which requires the `sqlscript` language (FOREACH/IF/LET), not
+# single-statement SQL.
+_UPSERT_STUBS_SQL = """
+BEGIN;
+LET stubs = :stubs;
+LET newCount = 0;
+FOREACH ($s IN $stubs) {
+  LET existing = SELECT FROM Paper WHERE id = $s.id;
+  IF ($existing.size() = 0) {
+    INSERT INTO Paper SET id = $s.id, is_stub = true, title = $s.title,
+                          arxiv_id = $s.arxiv_id, pmid = $s.pmid, s2_paper_id = $s.s2_paper_id;
+    LET newCount = $newCount + 1;
+  }
+}
+COMMIT;
+RETURN $newCount;
+"""
+
 _UPSERT_CITATION_EDGES = """
 UNWIND $edges AS e
 MATCH (citing:Paper {id: e.citing_id})
@@ -142,6 +169,27 @@ RETURN count(CASE WHEN is_new THEN 1 END) AS new_edges
 _APPLY_CITATION_EDGE_STATS = """
 MERGE (g:GraphStats {id: 'singleton'})
 SET g.citation_edges = coalesce(g.citation_edges, 0) + $new_edges
+"""
+
+_UPSERT_CITATION_EDGES_SQL = """
+BEGIN;
+LET edges = :edges;
+LET newCount = 0;
+FOREACH ($e IN $edges) {
+  LET citingRows = SELECT FROM Paper WHERE id = $e.citing_id;
+  LET citedRows = SELECT FROM Paper WHERE id = $e.cited_id;
+  IF ($citingRows.size() > 0 AND $citedRows.size() > 0) {
+    LET citingRid = $citingRows[0].@rid;
+    LET citedRid = $citedRows[0].@rid;
+    LET existingEdges = SELECT FROM CITES WHERE @out = $citingRid AND @in = $citedRid;
+    IF ($existingEdges.size() = 0) {
+      CREATE EDGE CITES FROM $citingRid TO $citedRid;
+      LET newCount = $newCount + 1;
+    }
+  }
+}
+COMMIT;
+RETURN $newCount;
 """
 
 _UPDATE_ENRICHMENT = """
@@ -219,31 +267,33 @@ def upsert_paper_stubs(stubs: list[CitationStub]) -> None:
     if not stubs:
         return
     deduped: dict[str, CitationStub] = {s.id: s for s in stubs}
-    stub_delta = run_write(
-        _UPSERT_STUBS,
-        stubs=[
-            {
-                "id": s.id,
-                "title": s.title,
-                "arxiv_id": s.arxiv_id,
-                "pmid": s.pmid,
-                "s2_paper_id": s.s2_paper_id,
-            }
-            for s in deduped.values()
-        ],
-    )[0]
-    run_write(_APPLY_STUB_STATS, **stub_delta)
+    stub_params = [
+        {
+            "id": s.id,
+            "title": s.title,
+            "arxiv_id": s.arxiv_id,
+            "pmid": s.pmid,
+            "s2_paper_id": s.s2_paper_id,
+        }
+        for s in deduped.values()
+    ]
+    if get_settings().graph_backend == "arcadedb":
+        new_stubs = arcadedb_http.run_script(_UPSERT_STUBS_SQL, stubs=stub_params)[0]["value"]
+    else:
+        new_stubs = run_write(_UPSERT_STUBS, stubs=stub_params)[0]["new_stubs"]
+    run_write(_APPLY_STUB_STATS, new_stubs=new_stubs)
 
 
 def upsert_citation_edges(edges: list[tuple[str, str]]) -> None:
     if not edges:
         return
     deduped = {(c, t) for c, t in edges}
-    edge_delta = run_write(
-        _UPSERT_CITATION_EDGES,
-        edges=[{"citing_id": c, "cited_id": t} for c, t in deduped],
-    )[0]
-    run_write(_APPLY_CITATION_EDGE_STATS, **edge_delta)
+    edge_params = [{"citing_id": c, "cited_id": t} for c, t in deduped]
+    if get_settings().graph_backend == "arcadedb":
+        new_edges = arcadedb_http.run_script(_UPSERT_CITATION_EDGES_SQL, edges=edge_params)[0]["value"]
+    else:
+        new_edges = run_write(_UPSERT_CITATION_EDGES, edges=edge_params)[0]["new_edges"]
+    run_write(_APPLY_CITATION_EDGE_STATS, new_edges=new_edges)
 
 
 def apply_enrichment(results: list[EnrichmentResult]) -> None:

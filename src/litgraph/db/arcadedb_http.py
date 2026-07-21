@@ -10,6 +10,14 @@ def run_command(sql: str, **params: Any) -> list[dict]:
     return _post("command", sql, params)
 
 
+def run_script(sql: str, **params: Any) -> list[dict]:
+    """Execute a multi-statement SQLScript (BEGIN/FOREACH/IF/COMMIT) as one atomic
+    transaction. Plain `run_command` sends `language: sql`, which silently misparses
+    script control flow instead of rejecting it outright -- this must go through its
+    own `language: sqlscript` request."""
+    return _post("command", sql, params, language="sqlscript")
+
+
 def run_query(sql: str, **params: Any) -> list[dict]:
     """Execute a read-only SQL statement against ArcadeDB."""
     return _post("query", sql, params)
@@ -44,10 +52,10 @@ def ensure_database() -> None:
             raise
 
 
-def _post(endpoint: str, sql: str, params: dict) -> list[dict]:
+def _post(endpoint: str, sql: str, params: dict, language: str = "sql") -> list[dict]:
     settings = get_settings()
     url = f"{settings.arcadedb_http_url}/api/v1/{endpoint}/{settings.arcadedb_database}"
-    body: dict[str, Any] = {"language": "sql", "command": sql}
+    body: dict[str, Any] = {"language": language, "command": sql}
     if params:
         body["params"] = params
     response = httpx.post(
