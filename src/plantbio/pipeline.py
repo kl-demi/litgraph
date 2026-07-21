@@ -47,7 +47,7 @@ def _flush(batch: dict[str, list[EntityMention]], totals: dict[str, int]) -> Non
 def run_pubtator_mentions(limit: int = 500, requests_per_second: float = 3.0) -> dict[str, int]:
     """For up to ``limit`` ingested PubMed papers PubTator3 hasn't been queried for yet,
     fetch its Gene/Chemical/Species annotations and upsert surviving ones as MENTIONS
-    edges (see docs/plant_schema.md for the full design + filter-policy rationale).
+    edges.
 
     Deliberately conservative so this can run alongside another ingestion job (e.g.
     `litgraph enrich`) against the same ArcadeDB instance: never SETs a property on a

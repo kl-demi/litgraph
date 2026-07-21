@@ -9,14 +9,8 @@ _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
 
 # Same shape as graph/upsert.py's _UPSERT_STUBS_SQL / _UPSERT_CITATION_EDGES_SQL
-# (litgraph switched those to this SQL/HTTP pattern today, both for speed and because
-# it never SETs a property on an existing Paper -- only SELECTs it to read @rid. That
-# matters here specifically: any write that touches a Paper vertex tracked by the
-# Paper[embedding] LSM_VECTOR index (SET-ting any field on an already-embedded Paper)
-# fails at commit on ArcadeDB 26.7.1 (see memory: litgraph-arcadedb-vector-index-timer-
-# bug). Mirroring the exact same pattern here means MENTIONS-edge writes carry the same
-# already-proven-safe characteristics as the CITES-edge writes running in production
-# right now, rather than reintroducing that risk with a fresh Cypher/Bolt MERGE.
+
+# SELECT then INSERT if MISSING, one call per entity type per batch
 def _upsert_entities_sql(vertex_type: str, key_prop: str) -> str:
     return f"""
 BEGIN;
@@ -33,7 +27,8 @@ COMMIT;
 RETURN $newCount;
 """
 
-
+# SELECTs both the Paper and the entity by natural key to get their @rids,
+# checks for existing MENTIONS edge and CREATE EDGE if none exists.
 def _upsert_mentions_sql(vertex_type: str, key_prop: str) -> str:
     return f"""
 BEGIN;
@@ -68,8 +63,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
     """Upsert Gene/Compound/Organism nodes and MENTIONS edges for a batch of papers.
 
     ``paper_mentions`` maps litgraph Paper.id -> the mentions PubTator3 found for it
-    (an empty list is fine -- it just contributes no edges). Returns counts of newly
-    created nodes/edges.
+    (an empty list means no edges). Returns counts of newly created nodes/edges.
     """
     settings = get_settings()
     if settings.graph_backend != "arcadedb":
@@ -89,6 +83,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
     stats = {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
 
     for vertex_type, key_prop in _KEY_PROP.items():
+        # Upsert entities by types
         entities = list(entities_by_type[vertex_type].values())
         if entities:
             entity_params = [{"entity_id": e.entity_id, "name": e.name} for e in entities]
@@ -97,6 +92,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
             ]["value"]
             stats[_STAT_KEY[vertex_type]] = new_count
 
+        # Once entities are created as nodes, add edges to them
         edges = edge_rows_by_type[vertex_type]
         if edges:
             edge_params = [{"paper_id": p, "entity_id": e} for p, e in edges]
@@ -111,10 +107,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
 def mark_papers_checked(paper_ids: list[str], checked_at: datetime) -> None:
     """Record that PubTator3 has been queried for these papers, whether or not any
     mentions survived the filter -- lets the pipeline's "unprocessed" query skip
-    already-checked papers on the next run instead of re-fetching them forever. Plain
-    Cypher/Bolt MERGE is fine here (unlike upsert_mentions above): PubtatorChecked is a
-    brand-new node type with no vector index, so it can't trip the embedding-index
-    commit bug that motivates the SQL/HTTP path for Paper-adjacent writes.
+    already-checked papers on the next run instead of re-fetching them forever.
     """
     if not paper_ids:
         return

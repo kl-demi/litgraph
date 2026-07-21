@@ -12,13 +12,12 @@ from plantbio.models import EntityMention
 # is a hard per-request ceiling PubTator3 enforces, not a tunable default.
 EXPORT_BATCH_SIZE = 100
 
-_VERTEX_TYPE_BY_ANNOTATION_TYPE = {"Gene": "Gene", "Chemical": "Compound", "Species": "Organism"}
-# Disease (and everything else PubTator3 tags -- Mutation, CellLine, ...) is dropped
-# outright, not just filtered downstream: docs/plant_schema.md's live test against a
-# real plant paper found PubTator's disease tagging produces confident-looking false
-# positives on ordinary plant-science words (e.g. "insect" mistagged as the disease
-# "Entomophobia", which then fed a bogus extracted relation). No plant-biology use for
-# it here.
+# Conversion between PubTator's annotations and ArcadeDB's node types
+_VERTEX_TYPE_BY_ANNOTATION_TYPE = {
+    "Gene": "Gene", 
+    "Chemical": "Compound", 
+    "Species": "Organism"
+}
 
 # Organism's key is the bare NCBI Taxonomy id (a single global namespace already, see
 # docs/plant_schema.md). Gene/Compound get a source prefix -- note PubTator3 normalizes
@@ -37,11 +36,11 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _entity_name(annotation_type: str, infons: dict, text: str) -> str:
-    # For Species, infons["name"] is just the taxon id again (e.g. "9606") -- the
-    # mention text ("human", "Arabidopsis") is the only human-readable name PubTator
-    # gives us. For Gene/Chemical, infons["name"] is the canonical symbol/name (e.g.
-    # "AGO2", "Adenosine"), more useful than whatever synonym/abbreviation was actually
-    # written in the source text.
+    # For Species, infons["name"] is just the taxon id (e.g. "9606"), so we
+    # need the actual mention text ("human", "Arabidopsis") to get human-readable 
+    # names. Conversely, for Gene/Chemical, infons["name"] is the canonical 
+    # symbol/name (e.g. "AGO2", "Adenosine"), more useful than whatever synonym/
+    # abbreviation was actually written in the source text.
     if annotation_type == "Species":
         return text or infons.get("name") or ""
     return infons.get("name") or text or ""
@@ -50,18 +49,20 @@ def _entity_name(annotation_type: str, infons: dict, text: str) -> str:
 def extract_mentions(annotations: list[dict]) -> list[EntityMention]:
     """Filter a PubTator3 document's raw annotations down to normalized Gene/Chemical/
     Species mentions, deduped within the document. Drops anything unnormalized
-    (``valid: false`` -- no stable key to upsert against) and anything outside the
-    three kept types.
+    (``valid: false`` -- no stable ID to key a node on) and anything outside the
+    listed annotation types.
     """
     seen: set[tuple[str, str]] = set()
     mentions: list[EntityMention] = []
     for ann in annotations:
+        # Filter annotations by entity type
         infons = ann.get("infons") or {}
         annotation_type = infons.get("type")
         vertex_type = _VERTEX_TYPE_BY_ANNOTATION_TYPE.get(annotation_type)
         if vertex_type is None or not infons.get("valid"):
             continue
-
+        
+        # Construct a normalized id, eg. MESH:D000241 
         raw_id = infons.get("normalized_id")
         if raw_id is None:
             raw_id = infons.get("identifier")
@@ -73,6 +74,7 @@ def extract_mentions(annotations: list[dict]) -> list[EntityMention]:
         prefix = _DB_PREFIXES.get(database, database)
         entity_id = f"{prefix}:{identifier}" if prefix else identifier
 
+        # Deduplicate entity
         key = (vertex_type, entity_id)
         if key in seen:
             continue
@@ -90,10 +92,8 @@ def extract_mentions(annotations: list[dict]) -> list[EntityMention]:
 class PubTatorClient:
     """Thin client for PubTator3's BioC-JSON export endpoint. Modeled on
     SemanticScholarClient (litgraph/ingest/semantic_scholar.py): synchronous httpx, a
-    sleep-based throttle, tenacity retry on 429/5xx/transport errors. PubTator3 has no
-    documented rate limit or API key, so ``requests_per_second`` defaults
-    conservatively (matching NCBI E-utilities' no-API-key ceiling) -- raise it only if
-    you've confirmed PubTator3 tolerates more.
+    sleep-based throttle, tenacity retry on 429/5xx/transport errors. PubTator3 limits
+    API requests to a maximum of 3 requests per second.
     """
 
     BASE_URL = "https://www.ncbi.nlm.nih.gov/research/pubtator3-api"
@@ -134,12 +134,15 @@ class PubTatorClient:
     def fetch_mentions(self, pmids: list[str]) -> Iterator[tuple[str, list[EntityMention]]]:
         """Yield ``(pmid, mentions)`` for each requested pmid PubTator3 has annotations
         for, batching requests at its hard ceiling of 100 PMIDs per call. PMIDs it
-        doesn't recognize are silently absent from the response (confirmed live, not an
-        error) -- callers should expect fewer results than requested.
+        doesn't recognize are silently absent from the response -- callers should 
+        expect fewer results than requested.
         """
         for batch in chunked(pmids, EXPORT_BATCH_SIZE):
             data = self._export_batch(batch)
             for doc in data.get("PubTator3", []):
                 pmid = str(doc.get("pmid"))
-                annotations = [ann for passage in doc.get("passages", []) for ann in passage.get("annotations", [])]
+                annotations = [
+                    ann for passage in doc.get("passages", []) 
+                    for ann in passage.get("annotations", [])
+                ]
                 yield pmid, extract_mentions(annotations)
