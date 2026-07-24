@@ -50,6 +50,11 @@ def test_embed_remote_gives_up_after_persistent_502(mocker):
 def test_embed_texts_returns_list_of_lists(mocker):
     embeddings._get_model.cache_clear()
     mocker.patch.object(embeddings, "_get_model", return_value=FakeModel())
+    # Force the local-model path regardless of the real environment's config -- when
+    # EMBEDDING_SERVICE_URL is set (e.g. this dev box's RunPod GPU server, see .env),
+    # embed_texts() takes the _embed_remote() branch instead and never calls the
+    # mocked _get_model() at all, silently hitting the real remote service.
+    mocker.patch.object(embeddings, "get_settings", return_value=mocker.Mock(embedding_service_url=None))
 
     vectors = embeddings.embed_texts(["hello", "a longer string"])
 

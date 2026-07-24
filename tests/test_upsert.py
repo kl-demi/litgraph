@@ -73,7 +73,8 @@ def test_upsert_papers_threads_stats_delta_into_apply_call(mocker):
 
 
 def test_upsert_paper_stubs_dedupes(mocker):
-    mock_run_write = _mock_run_write(mocker)
+    _mock_run_write(mocker)
+    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
     stubs = [
         CitationStub(arxiv_id="2001.00001", title="A"),
         CitationStub(arxiv_id="2001.00001", title="A duplicate"),
@@ -82,7 +83,7 @@ def test_upsert_paper_stubs_dedupes(mocker):
 
     upsert.upsert_paper_stubs(stubs)
 
-    upsert_call = mock_run_write.call_args_list[0]
+    upsert_call = mock_run_script.call_args_list[0]
     ids = {s["id"] for s in upsert_call.kwargs["stubs"]}
     assert ids == {"2001.00001", "s2:s2-9"}
 
@@ -93,6 +94,7 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
     Semantic Scholar and calls the database write function with the right params
     """
     mock_run_write = _mock_run_write(mocker, citation_count=3)
+    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
     result = EnrichmentResult(
         paper_id="2101.00001",
         s2_paper_id="s2-1",
@@ -103,10 +105,12 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
 
     upsert.apply_enrichment([result])
 
-    calls = mock_run_write.call_args_list
-    stub_call = next(c for c in calls if "stubs" in c.kwargs)
-    edge_call = next(c for c in calls if "edges" in c.kwargs)
-    enrichment_call = next(c for c in calls if "results" in c.kwargs)
+    # Stub/edge upserts go over arcadedb_http.run_script (SQL) now; only the
+    # GraphStats-apply and enrichment-fields writes still go through run_write (Cypher).
+    script_calls = mock_run_script.call_args_list
+    stub_call = next(c for c in script_calls if "stubs" in c.kwargs)
+    edge_call = next(c for c in script_calls if "edges" in c.kwargs)
+    enrichment_call = next(c for c in mock_run_write.call_args_list if "results" in c.kwargs)
 
     # Check that stubs are created for both papers "2001.00001" and "s2-2"
     stub_ids = {s["id"] for s in stub_call.kwargs["stubs"]}
@@ -128,12 +132,13 @@ def test_apply_enrichment_noop_on_empty(mocker):
 
 
 def test_upsert_paper_stubs_includes_pmid(mocker):
-    mock_run_write = _mock_run_write(mocker)
+    _mock_run_write(mocker)
+    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
     stubs = [CitationStub(pmid="12345678", title="A PubMed paper")]
 
     upsert.upsert_paper_stubs(stubs)
 
-    stub_params = mock_run_write.call_args_list[0].kwargs["stubs"][0]
+    stub_params = mock_run_script.call_args_list[0].kwargs["stubs"][0]
     assert stub_params["id"] == "pmid:12345678"
     assert stub_params["pmid"] == "12345678"
 
