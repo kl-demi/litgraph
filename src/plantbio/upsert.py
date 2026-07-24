@@ -3,7 +3,7 @@ from datetime import datetime
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
-from plantbio.models import EntityMention
+from plantbio.models import EntityMention, Pathway
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
@@ -56,6 +56,19 @@ _MARK_CHECKED = """
 UNWIND $paper_ids AS pid
 MERGE (c:PubtatorChecked {paper_id: pid})
 ON CREATE SET c.checked_at = $checked_at
+"""
+
+# Plain Cypher/Bolt MERGE (unlike upsert_mentions above) -- Pathway nodes don't touch
+# Paper at all in this pass (no Gene/Compound membership edges yet, see
+# docs/plant_schema.md), so there's no vector-index-bug risk to route around.
+_UPSERT_PATHWAYS = """
+UNWIND $pathways AS p
+MERGE (pw:Pathway {pathway_id: p.pathway_id})
+ON CREATE SET pw._is_new = true
+WITH pw, p, coalesce(pw._is_new, false) AS is_new
+REMOVE pw._is_new
+SET pw.name = p.name, pw.source_db = p.source_db
+RETURN count(CASE WHEN is_new THEN 1 END) AS new_pathways
 """
 
 
@@ -112,3 +125,12 @@ def mark_papers_checked(paper_ids: list[str], checked_at: datetime) -> None:
     if not paper_ids:
         return
     run_write(_MARK_CHECKED, paper_ids=paper_ids, checked_at=checked_at.isoformat())
+
+
+def upsert_pathways(pathways: list[Pathway]) -> int:
+    """Upsert a batch of Pathway nodes (from GO's biological_process branch, and later
+    PlantCyc/MetaCyc). Returns the count of newly created nodes."""
+    if not pathways:
+        return 0
+    params = [{"pathway_id": p.pathway_id, "name": p.name, "source_db": p.source_db} for p in pathways]
+    return run_write(_UPSERT_PATHWAYS, pathways=params)[0]["new_pathways"]

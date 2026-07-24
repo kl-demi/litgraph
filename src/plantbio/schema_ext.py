@@ -1,7 +1,7 @@
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 
-_VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked"]
+_VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway"]
 _EDGE_TYPES = ["MENTIONS"]
 
 # (vertex_type, key_property) -- matches docs/plant_schema.md's node table, except
@@ -11,11 +11,15 @@ _EDGE_TYPES = ["MENTIONS"]
 # so re-runs don't keep re-fetching papers that legitimately had zero qualifying
 # mentions -- kept as its own node rather than a Paper property so this never has to
 # write to a Paper vertex (see upsert.py's docstring on the ArcadeDB vector-index bug).
+# Pathway holds both GO's species-agnostic biological_process terms (source_db="GO")
+# and, later, PlantCyc/MetaCyc's species-specific pathways (source_db="PlantCyc"/
+# "MetaCyc") in the same node type/key, per docs/plant_schema.md's Pathway row.
 _UNIQUE_KEYS = [
     ("Organism", "taxon_id"),
     ("Gene", "gene_id"),
     ("Compound", "compound_id"),
     ("PubtatorChecked", "paper_id"),
+    ("Pathway", "pathway_id"),
 ]
 
 
@@ -36,5 +40,6 @@ def ensure_schema() -> None:
     for vertex_type, key_prop in _UNIQUE_KEYS:
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
         arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) UNIQUE")
-    for vertex_type in ("Organism", "Gene", "Compound"):
+    for vertex_type in ("Organism", "Gene", "Compound", "Pathway"):
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.name STRING")
+    arcadedb_http.ensure_ddl("CREATE PROPERTY Pathway.source_db STRING")

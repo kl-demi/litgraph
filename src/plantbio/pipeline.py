@@ -4,9 +4,10 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from litgraph.db.neo4j_client import run_read
+from plantbio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from plantbio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
-from plantbio.models import EntityMention
-from plantbio.upsert import mark_papers_checked, upsert_mentions
+from plantbio.models import EntityMention, Pathway
+from plantbio.upsert import mark_papers_checked, upsert_mentions, upsert_pathways
 
 console = Console()
 
@@ -90,5 +91,41 @@ def run_pubtator_mentions(limit: int = 500, requests_per_second: float = 3.0) ->
         f"pubtator-mentions: processed {totals['papers_processed']} papers -- "
         f"+{totals['new_genes']} genes, +{totals['new_compounds']} compounds, "
         f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges"
+    )
+    return totals
+
+
+def run_go_ingest(
+    obo_path: str | None = None, batch_size: int = 500, force_download: bool = False
+) -> dict[str, int]:
+    """Ingest GO's biological_process branch as Pathway nodes -- the species-agnostic
+    half of pathway ingestion (docs/plant_schema.md; PlantCyc/MetaCyc's species-specific
+    pathways are a separate, not-yet-built pass pending its license/PGDB files).
+
+    Downloads go-basic.obo to ``obo_path`` (default: data/go-basic.obo) if not already
+    cached there. No Paper interaction at all -- pure Pathway-node upserts -- so this
+    carries no risk to any other job running against the same ArcadeDB instance.
+    """
+    path = ensure_obo_file(obo_path or DEFAULT_OBO_PATH, force=force_download)
+    totals = {"pathways_processed": 0, "new_pathways": 0}
+
+    with _progress() as progress:
+        task = progress.add_task("Ingesting GO biological_process terms", total=None)
+        batch: list[Pathway] = []
+        for pathway in extract_pathways(iter_term_stanzas(path)):
+            batch.append(pathway)
+            if len(batch) >= batch_size:
+                totals["new_pathways"] += upsert_pathways(batch)
+                totals["pathways_processed"] += len(batch)
+                progress.update(task, advance=len(batch))
+                batch = []
+        if batch:
+            totals["new_pathways"] += upsert_pathways(batch)
+            totals["pathways_processed"] += len(batch)
+            progress.update(task, advance=len(batch))
+
+    console.log(
+        f"go-pathways: processed {totals['pathways_processed']} biological_process terms, "
+        f"+{totals['new_pathways']} new Pathway nodes"
     )
     return totals
