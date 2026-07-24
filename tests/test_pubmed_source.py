@@ -162,6 +162,32 @@ def test_fetch_historical_papers_paginates_via_retstart(mocker):
         assert data["query_key"] == "1"
 
 
+def test_fetch_historical_papers_stops_at_limit(mocker):
+    fake_client = FakeHistoryClient(
+        count=3,
+        batches_by_retstart={
+            0: _article_xml("111", "222"),
+            2: _article_xml("333"),
+        },
+    )
+    mocker.patch("litgraph.ingest.pubmed_source.httpx.Client", return_value=fake_client)
+    mocker.patch("time.sleep")
+
+    papers = list(
+        fetch_historical_papers(
+            '"Anatomy"[MeSH Major Topic]',
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 12, 31),
+            batch_size=2,
+            limit=1,
+        )
+    )
+
+    assert [p.pmid for p in papers] == ["111"]
+    # Stops after the first matching article, never fetches the second retstart batch.
+    assert [call[2]["retstart"] for call in fake_client.post_calls] == [0]
+
+
 def test_fetch_historical_papers_empty_when_no_matches(mocker):
     fake_client = FakeHistoryClient(count=0, batches_by_retstart={})
     mocker.patch("litgraph.ingest.pubmed_source.httpx.Client", return_value=fake_client)

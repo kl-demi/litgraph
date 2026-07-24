@@ -199,6 +199,7 @@ def fetch_historical_papers(
     start_date: date | None = None,
     end_date: date | None = None,
     batch_size: int = 200,
+    limit: int | None = None,
 ) -> Iterator[Paper]:
     """Fetch *all* PubMed papers matching ``mesh_terms`` (optionally within a date range),
     via NCBI's history server (``usehistory=y`` + ``retstart`` pagination), rather than
@@ -211,7 +212,9 @@ def fetch_historical_papers(
     callers doing a long/resumable backload can checkpoint the oldest ``published_date``
     seen so far and pass it back in as ``end_date`` to resume walking backward from
     there, rather than re-fetching from "now" every time (see
-    ``run_backload_pubmed_api`` in ``ingest/pipeline.py``).
+    ``run_backload_pubmed_api`` in ``ingest/pipeline.py``). ``limit`` stops yielding
+    (and therefore checkpointing) after that many papers, so a caller can bound one
+    invocation's cost and pick up the remainder on the next run.
 
     Requires ``ncbi_email``/``ncbi_api_key`` to be set; rate-limited to the NCBI-documented
     ceiling (10 req/sec with an API key, 3 req/sec without).
@@ -220,6 +223,7 @@ def fetch_historical_papers(
     requests_per_second = 10.0 if settings.ncbi_api_key else 3.0
     min_interval = 1.0 / requests_per_second
     last_request_at: float | None = None
+    yielded = 0
 
     with httpx.Client(base_url=settings.ncbi_eutils_base_url, timeout=30.0) as client:
         web_env, query_key, count = _esearch_with_history(client, mesh_terms, start_date, end_date)
@@ -236,3 +240,6 @@ def fetch_historical_papers(
                 fields = parse_pubmed_article(article_el)
                 if fields["pmid"]:
                     yield _result_to_paper(fields)
+                    yielded += 1
+                    if limit is not None and yielded >= limit:
+                        return

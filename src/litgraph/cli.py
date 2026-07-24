@@ -147,6 +147,7 @@ def backload_pubmed_api(
     mesh_terms: str = typer.Option(None, "--mesh-terms", help="PubMed query string, e.g. a MeSH term expression"),
     start_date: str = typer.Option(None, "--start-date", help="YYYY-MM-DD"),
     end_date: str = typer.Option(None, "--end-date", help="YYYY-MM-DD"),
+    limit: int = typer.Option(None, "--limit", help="Max papers to ingest this run (resumes from here next time)"),
     batch_size: int = typer.Option(200, "--batch-size"),
 ) -> None:
     """Historical backload of PubMed papers via NCBI E-utilities (no bulk file download --
@@ -157,6 +158,7 @@ def backload_pubmed_api(
         query,
         start_date=_parse_date(start_date),
         end_date=_parse_date(end_date),
+        limit=limit,
         batch_size=batch_size,
     )
     console.print(f"[green]Backloaded {total} PubMed papers via API.[/green]")

@@ -234,6 +234,7 @@ def run_backload_pubmed_api(
     start_date: date | None = None,
     end_date: date | None = None,
     batch_size: int = 200,
+    limit: int | None = None,
 ) -> int:
     """Historical backload of PubMed papers matching ``mesh_terms``, fetched entirely via
     NCBI E-utilities (no bulk baseline files) -- NCBI filters server-side by the query,
@@ -243,7 +244,10 @@ def run_backload_pubmed_api(
     after every batch, keyed by ``mesh_terms`` -- an interrupted run resumes from there
     on the next invocation instead of re-walking from "now" (and re-upserting papers
     already ingested). Pass an explicit ``end_date`` to bypass the checkpoint and pin a
-    specific historical slice instead. Returns count ingested.
+    specific historical slice instead. ``limit`` stops this run cleanly (checkpoint
+    written, run logged) after that many papers, to bound a single invocation's cost --
+    the next call resumes from the checkpoint same as if it had been killed. Returns
+    count ingested.
     """
     started_at = datetime.now()
     requested_end_date = end_date
@@ -261,10 +265,10 @@ def run_backload_pubmed_api(
     earliest: date | None = None
     latest: date | None = None
 
-    with _progress(determinate=False) as progress:
-        task = progress.add_task("Backloading PubMed papers via API", total=None)
+    with _progress(determinate=limit is not None) as progress:
+        task = progress.add_task("Backloading PubMed papers via API", total=limit)
         for paper in fetch_historical_pubmed_papers(
-            mesh_terms, start_date=start_date, end_date=end_date, batch_size=batch_size
+            mesh_terms, start_date=start_date, end_date=end_date, batch_size=batch_size, limit=limit
         ):
             batch.append(paper)
             published = paper.published_date
@@ -297,6 +301,7 @@ def run_backload_pubmed_api(
         requested_start_date=start_date.isoformat() if start_date else None,
         requested_end_date=requested_end_date.isoformat() if requested_end_date else None,
         resumed_from_checkpoint=resumed_from.isoformat() if resumed_from else None,
+        limit=limit,
         earliest_published=earliest.isoformat() if earliest else None,
         latest_published=latest.isoformat() if latest else None,
     )
