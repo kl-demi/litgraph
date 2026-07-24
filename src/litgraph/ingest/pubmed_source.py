@@ -73,7 +73,7 @@ def _esearch(client: httpx.Client, mesh_terms: str, since: datetime | None, max_
         "term": mesh_terms,
         "retmode": "json",
         "retmax": max_results,
-        "sort": "pub+date",
+        "sort": "pub_date",
         "datetype": "pdat",
     }
     if since is not None:
@@ -113,6 +113,10 @@ def _esearch_with_history(
     (NCBI's history server), sidestepping esearch's own 10,000-result retmax cap --
     efetch can then page through the whole set via ``retstart``.
 
+    Sorted newest-published-first (explicit ``sort=pub_date``, not NCBI's unsorted
+    default) so a run walks backward through history in a fixed order -- this is what
+    ``fetch_historical_papers``'s date-based checkpoint below relies on to resume.
+
     Returns (web_env, query_key, total_count).
     """
     params = {
@@ -122,6 +126,7 @@ def _esearch_with_history(
         "retmode": "json",
         "retmax": 0,
         "usehistory": "y",
+        "sort": "pub_date",
         "datetype": "pdat",
     }
     if start_date is not None:
@@ -201,6 +206,12 @@ def fetch_historical_papers(
     ``retmax``. Intended for a full historical backload scoped by MeSH terms, as an
     alternative to downloading NCBI's bulk baseline files when disk space is tight,
     since NCBI filters by the query server-side before anything is sent.
+
+    Yields newest-published-first (see ``_esearch_with_history``'s explicit sort) --
+    callers doing a long/resumable backload can checkpoint the oldest ``published_date``
+    seen so far and pass it back in as ``end_date`` to resume walking backward from
+    there, rather than re-fetching from "now" every time (see
+    ``run_backload_pubmed_api`` in ``ingest/pipeline.py``).
 
     Requires ``ncbi_email``/``ncbi_api_key`` to be set; rate-limited to the NCBI-documented
     ceiling (10 req/sec with an API key, 3 req/sec without).

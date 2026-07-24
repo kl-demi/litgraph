@@ -92,6 +92,7 @@ def test_fetch_new_papers_parses_and_paginates(mocker):
     esearch_params = fake_client.get_calls[0][1]
     assert esearch_params["term"] == '"Anatomy"[MeSH Major Topic]'
     assert esearch_params["mindate"] == "2026/01/01"
+    assert esearch_params["sort"] == "pub_date"
 
 
 def test_fetch_new_papers_empty_when_no_results(mocker):
@@ -152,6 +153,7 @@ def test_fetch_historical_papers_paginates_via_retstart(mocker):
     assert esearch_params["usehistory"] == "y"
     assert esearch_params["mindate"] == "2020/01/01"
     assert esearch_params["maxdate"] == "2020/12/31"
+    assert esearch_params["sort"] == "pub_date"
 
     retstarts = [call[2]["retstart"] for call in fake_client.post_calls]
     assert retstarts == [0, 2]

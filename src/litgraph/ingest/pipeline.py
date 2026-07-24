@@ -237,9 +237,25 @@ def run_backload_pubmed_api(
 ) -> int:
     """Historical backload of PubMed papers matching ``mesh_terms``, fetched entirely via
     NCBI E-utilities (no bulk baseline files) -- NCBI filters server-side by the query,
-    so this only transfers matching records rather than the full corpus. Returns count
-    ingested."""
+    so this only transfers matching records rather than the full corpus.
+
+    Walks newest-published-first and checkpoints the oldest ``published_date`` reached
+    after every batch, keyed by ``mesh_terms`` -- an interrupted run resumes from there
+    on the next invocation instead of re-walking from "now" (and re-upserting papers
+    already ingested). Pass an explicit ``end_date`` to bypass the checkpoint and pin a
+    specific historical slice instead. Returns count ingested.
+    """
     started_at = datetime.now()
+    requested_end_date = end_date
+    checkpoint_job = f"pubmed_backload_api:{mesh_terms}"
+    resumed_from: date | None = None
+    if end_date is None:
+        checkpoint = get_pubmed_checkpoint(job=checkpoint_job)
+        if checkpoint is not None:
+            resumed_from = checkpoint.date()
+            end_date = resumed_from
+            console.log(f"backload-pubmed-api: resuming, continuing backward from checkpoint {resumed_from}")
+
     batch: list[Paper] = []
     total = 0
     earliest: date | None = None
@@ -262,10 +278,14 @@ def run_backload_pubmed_api(
                 total += len(batch)
                 progress.update(task, completed=total)
                 batch = []
+                if earliest is not None:
+                    set_pubmed_checkpoint(datetime.combine(earliest, datetime.min.time()), job=checkpoint_job)
         if batch:
             _embed_and_upsert(batch)
             total += len(batch)
             progress.update(task, completed=total)
+            if earliest is not None:
+                set_pubmed_checkpoint(datetime.combine(earliest, datetime.min.time()), job=checkpoint_job)
 
     console.log(f"backload-pubmed-api: done, {total} papers upserted, batch spans {earliest} to {latest}")
     log_run(
@@ -275,7 +295,8 @@ def run_backload_pubmed_api(
         total,
         mesh_terms=mesh_terms,
         requested_start_date=start_date.isoformat() if start_date else None,
-        requested_end_date=end_date.isoformat() if end_date else None,
+        requested_end_date=requested_end_date.isoformat() if requested_end_date else None,
+        resumed_from_checkpoint=resumed_from.isoformat() if resumed_from else None,
         earliest_published=earliest.isoformat() if earliest else None,
         latest_published=latest.isoformat() if latest else None,
     )
