@@ -4,10 +4,10 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from litgraph.db.neo4j_client import run_read
-from plantbio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
-from plantbio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
-from plantbio.models import EntityMention, Pathway
-from plantbio.upsert import mark_papers_checked, upsert_mentions, upsert_pathways
+from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
+from spokebio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
+from spokebio.models import EntityMention, Pathway
+from spokebio.upsert import mark_papers_checked, upsert_mentions, upsert_pathways
 
 console = Console()
 

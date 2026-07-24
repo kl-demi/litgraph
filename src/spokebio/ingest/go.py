@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from plantbio.models import Pathway
+from spokebio.models import Pathway
 
 GO_OBO_URL = "https://purl.obolibrary.org/obo/go/go-basic.obo"
 DEFAULT_OBO_PATH = "data/go-basic.obo"

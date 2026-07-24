@@ -30,7 +30,7 @@ def ensure_schema() -> None:
     """
     settings = get_settings()
     if settings.graph_backend != "arcadedb":
-        raise NotImplementedError("plantbio schema currently only supports the arcadedb backend")
+        raise NotImplementedError("spokebio schema currently only supports the arcadedb backend")
 
     for vertex_type in _VERTEX_TYPES:
         arcadedb_http.ensure_ddl(f"CREATE VERTEX TYPE {vertex_type} IF NOT EXISTS")

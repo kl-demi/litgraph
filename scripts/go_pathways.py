@@ -11,8 +11,8 @@ run unless --obo-path points at an already-downloaded copy.
 
 import argparse
 
-from plantbio.pipeline import run_go_ingest
-from plantbio.schema_ext import ensure_schema
+from spokebio.pipeline import run_go_ingest
+from spokebio.schema_ext import ensure_schema
 
 
 def main() -> None:

@@ -5,7 +5,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from litgraph.db.neo4j_client import chunked
-from plantbio.models import EntityMention
+from spokebio.models import EntityMention
 
 # Confirmed against the live API (2026-07-21): 100 pmids in one request succeeds,
 # 101 fails with HTTP 400 {"The field \"pmids\" can not be longer than 100"} -- this

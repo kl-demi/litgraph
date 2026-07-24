@@ -1,6 +1,6 @@
-from plantbio.ingest.go import ensure_obo_file, extract_pathways, iter_term_stanzas
-from plantbio.models import Pathway
-from plantbio.upsert import upsert_pathways
+from spokebio.ingest.go import ensure_obo_file, extract_pathways, iter_term_stanzas
+from spokebio.models import Pathway
+from spokebio.upsert import upsert_pathways
 
 _OBO_FIXTURE = """format-version: 1.2
 data-version: releases/2026-06-15
@@ -64,7 +64,7 @@ def test_extract_pathways_keeps_only_non_obsolete_biological_process(tmp_path):
 def test_ensure_obo_file_skips_download_if_already_cached(tmp_path, mocker):
     obo_file = tmp_path / "go-basic.obo"
     obo_file.write_text(_OBO_FIXTURE)
-    mock_stream = mocker.patch("plantbio.ingest.go.httpx.stream")
+    mock_stream = mocker.patch("spokebio.ingest.go.httpx.stream")
 
     result = ensure_obo_file(obo_file)
 
@@ -88,7 +88,7 @@ def test_ensure_obo_file_downloads_when_missing(tmp_path, mocker):
         def __exit__(self, *exc_info):
             pass
 
-    mocker.patch("plantbio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
+    mocker.patch("spokebio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
 
     result = ensure_obo_file(obo_file)
 
@@ -113,7 +113,7 @@ def test_ensure_obo_file_force_redownloads(tmp_path, mocker):
         def __exit__(self, *exc_info):
             pass
 
-    mock_stream = mocker.patch("plantbio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
+    mock_stream = mocker.patch("spokebio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
 
     ensure_obo_file(obo_file, force=True)
 
@@ -122,7 +122,7 @@ def test_ensure_obo_file_force_redownloads(tmp_path, mocker):
 
 
 def test_upsert_pathways_writes_params(mocker):
-    mock_run_write = mocker.patch("plantbio.upsert.run_write")
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
     mock_run_write.return_value = [{"new_pathways": 2}]
 
     pathways = [
@@ -138,6 +138,6 @@ def test_upsert_pathways_writes_params(mocker):
 
 
 def test_upsert_pathways_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("plantbio.upsert.run_write")
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
     assert upsert_pathways([]) == 0
     mock_run_write.assert_not_called()

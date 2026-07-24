@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 
-from plantbio.ingest.pubtator import PubTatorClient, extract_mentions
-from plantbio.models import EntityMention
-from plantbio.upsert import mark_papers_checked, upsert_mentions
+from spokebio.ingest.pubtator import PubTatorClient, extract_mentions
+from spokebio.models import EntityMention
+from spokebio.upsert import mark_papers_checked, upsert_mentions
 
 
 def _annotation(entity_type, identifier, normalized_id, database, name, text, valid=True):
@@ -81,7 +81,7 @@ def _doc(pmid, annotations):
 
 def test_fetch_mentions_batches_at_100_and_parses_annotations(mocker):
     fake_client = FakeHttpxClient({"111,222": [_doc(111, [_GENE]), _doc(222, [_SPECIES])]})
-    mocker.patch("plantbio.ingest.pubtator.httpx.Client", return_value=fake_client)
+    mocker.patch("spokebio.ingest.pubtator.httpx.Client", return_value=fake_client)
     mocker.patch("time.sleep")
 
     client = PubTatorClient()
@@ -94,7 +94,7 @@ def test_fetch_mentions_batches_at_100_and_parses_annotations(mocker):
 
 def test_fetch_mentions_silently_skips_pmids_pubtator_has_no_doc_for(mocker):
     fake_client = FakeHttpxClient({"111,222": [_doc(111, [_GENE])]})
-    mocker.patch("plantbio.ingest.pubtator.httpx.Client", return_value=fake_client)
+    mocker.patch("spokebio.ingest.pubtator.httpx.Client", return_value=fake_client)
     mocker.patch("time.sleep")
 
     client = PubTatorClient()
@@ -104,7 +104,7 @@ def test_fetch_mentions_silently_skips_pmids_pubtator_has_no_doc_for(mocker):
 
 
 def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
-    mock_run_script = mocker.patch("plantbio.upsert.arcadedb_http.run_script")
+    mock_run_script = mocker.patch("spokebio.upsert.arcadedb_http.run_script")
     mock_run_script.return_value = [{"value": 1}]
 
     paper_mentions = {
@@ -123,14 +123,14 @@ def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
 
 
 def test_upsert_mentions_noop_on_empty(mocker):
-    mock_run_script = mocker.patch("plantbio.upsert.arcadedb_http.run_script")
+    mock_run_script = mocker.patch("spokebio.upsert.arcadedb_http.run_script")
     stats = upsert_mentions({})
     mock_run_script.assert_not_called()
     assert stats == {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
 
 
 def test_mark_papers_checked_writes_merge(mocker):
-    mock_run_write = mocker.patch("plantbio.upsert.run_write")
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
     now = datetime(2026, 7, 21, tzinfo=UTC)
 
     mark_papers_checked(["pmid:111", "pmid:222"], now)
@@ -141,6 +141,6 @@ def test_mark_papers_checked_writes_merge(mocker):
 
 
 def test_mark_papers_checked_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("plantbio.upsert.run_write")
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
     mark_papers_checked([], datetime.now(UTC))
     mock_run_write.assert_not_called()

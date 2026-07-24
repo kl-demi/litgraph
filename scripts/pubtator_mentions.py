@@ -5,14 +5,14 @@ Disease is dropped, why unnormalized entities are skipped), and the live API tes
 was built from.
 
 Safe to run alongside another ingestion job (e.g. `litgraph enrich`) against the same
-ArcadeDB instance -- see plantbio/upsert.py's docstring for why. Start with a small
+ArcadeDB instance -- see spokebio/upsert.py's docstring for why. Start with a small
 --limit on a first run against a live/shared box before scaling up.
 """
 
 import argparse
 
-from plantbio.pipeline import run_pubtator_mentions
-from plantbio.schema_ext import ensure_schema
+from spokebio.pipeline import run_pubtator_mentions
+from spokebio.schema_ext import ensure_schema
 
 
 def main() -> None:

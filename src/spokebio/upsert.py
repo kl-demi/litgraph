@@ -3,7 +3,7 @@ from datetime import datetime
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
-from plantbio.models import EntityMention, Pathway
+from spokebio.models import EntityMention, Pathway
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
@@ -80,7 +80,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
     """
     settings = get_settings()
     if settings.graph_backend != "arcadedb":
-        raise NotImplementedError("plantbio upsert currently only supports the arcadedb backend")
+        raise NotImplementedError("spokebio upsert currently only supports the arcadedb backend")
 
     if not paper_mentions:
         return {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
