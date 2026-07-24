@@ -6,8 +6,9 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from litgraph.db.neo4j_client import run_read
 from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
-from spokebio.models import EntityMention, Pathway
-from spokebio.upsert import mark_papers_checked, upsert_mentions, upsert_pathways
+from spokebio.ingest.reactome import ensure_reactome_file, extract_human_pathways, extract_participates_in
+from spokebio.models import EntityMention, ParticipatesIn, Pathway
+from spokebio.upsert import mark_papers_checked, upsert_mentions, upsert_participates_in, upsert_pathways
 
 console = Console()
 
@@ -127,5 +128,68 @@ def run_go_ingest(
     console.log(
         f"go-pathways: processed {totals['pathways_processed']} biological_process terms, "
         f"+{totals['new_pathways']} new Pathway nodes"
+    )
+    return totals
+
+
+def run_reactome_ingest(batch_size: int = 500, force_download: bool = False) -> dict[str, int]:
+    """Ingest Reactome's human pathways (ReactomePathways.txt) as Pathway nodes, and
+    NCBI Gene -> Pathway associations (NCBI2Reactome.txt, the base file -- not
+    _All_Levels, see docs/spoke_schema.md's open-decision note on that tradeoff) as
+    PARTICIPATES_IN edges.
+
+    Unlike the GO/PubTator pieces, this creates Gene nodes on demand (see
+    upsert.py's docstring on upsert_participates_in) -- most of Reactome's human genes
+    won't have a Gene node yet from literature-derived MENTIONS alone.
+    """
+    pathways_path = ensure_reactome_file("ReactomePathways.txt", force=force_download)
+    edges_path = ensure_reactome_file("NCBI2Reactome.txt", force=force_download)
+
+    totals = {
+        "pathways_processed": 0,
+        "new_pathways": 0,
+        "edges_processed": 0,
+        "new_participates_in_edges": 0,
+    }
+
+    with _progress() as progress:
+        task = progress.add_task("Ingesting Reactome human pathways", total=None)
+        batch: list[Pathway] = []
+        for pathway in extract_human_pathways(pathways_path):
+            batch.append(pathway)
+            if len(batch) >= batch_size:
+                totals["new_pathways"] += upsert_pathways(batch)
+                totals["pathways_processed"] += len(batch)
+                progress.update(task, advance=len(batch))
+                batch = []
+        if batch:
+            totals["new_pathways"] += upsert_pathways(batch)
+            totals["pathways_processed"] += len(batch)
+            progress.update(task, advance=len(batch))
+
+    console.log(
+        f"reactome-pathways: processed {totals['pathways_processed']} human pathways, "
+        f"+{totals['new_pathways']} new Pathway nodes"
+    )
+
+    edges = extract_participates_in(edges_path)
+    with _progress() as progress:
+        task = progress.add_task("Writing PARTICIPATES_IN edges", total=len(edges))
+        edge_batch: list[ParticipatesIn] = []
+        for edge in edges:
+            edge_batch.append(edge)
+            if len(edge_batch) >= batch_size:
+                totals["new_participates_in_edges"] += upsert_participates_in(edge_batch)
+                totals["edges_processed"] += len(edge_batch)
+                progress.update(task, advance=len(edge_batch))
+                edge_batch = []
+        if edge_batch:
+            totals["new_participates_in_edges"] += upsert_participates_in(edge_batch)
+            totals["edges_processed"] += len(edge_batch)
+            progress.update(task, advance=len(edge_batch))
+
+    console.log(
+        f"reactome-participates-in: processed {totals['edges_processed']} gene-pathway pairs, "
+        f"+{totals['new_participates_in_edges']} new PARTICIPATES_IN edges"
     )
     return totals

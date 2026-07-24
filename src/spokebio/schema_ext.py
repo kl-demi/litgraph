@@ -2,18 +2,17 @@ from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 
 _VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway"]
-_EDGE_TYPES = ["MENTIONS"]
+_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN"]
 
-# (vertex_type, key_property) -- matches docs/plant_schema.md's node table, except
-# Compound's key is named compound_id rather than chebi_id: see
-# ingest/pubtator.py's module docstring for why. PubtatorChecked is a bookkeeping node
-# (not a domain entity) marking "PubTator3 has already been queried for this paper",
-# so re-runs don't keep re-fetching papers that legitimately had zero qualifying
-# mentions -- kept as its own node rather than a Paper property so this never has to
-# write to a Paper vertex (see upsert.py's docstring on the ArcadeDB vector-index bug).
-# Pathway holds both GO's species-agnostic biological_process terms (source_db="GO")
-# and, later, PlantCyc/MetaCyc's species-specific pathways (source_db="PlantCyc"/
-# "MetaCyc") in the same node type/key, per docs/plant_schema.md's Pathway row.
+# (vertex_type, key_property) -- Compound's key is named compound_id rather than
+# chebi_id: see ingest/pubtator.py's module docstring for why. PubtatorChecked is a
+# bookkeeping node (not a domain entity) marking "PubTator3 has already been queried
+# for this paper", so re-runs don't keep re-fetching papers that legitimately had zero
+# qualifying mentions -- kept as its own node rather than a Paper property so this
+# never has to write to a Paper vertex (see upsert.py's docstring on the ArcadeDB
+# vector-index bug). Pathway holds both GO's species-agnostic biological_process terms
+# (source_db="GO") and Reactome's human-specific pathways (source_db="Reactome") in the
+# same node type/key -- see docs/spoke_schema.md.
 _UNIQUE_KEYS = [
     ("Organism", "taxon_id"),
     ("Gene", "gene_id"),

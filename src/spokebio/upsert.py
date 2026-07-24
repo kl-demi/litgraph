@@ -3,7 +3,7 @@ from datetime import datetime
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
-from spokebio.models import EntityMention, Pathway
+from spokebio.models import EntityMention, ParticipatesIn, Pathway
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
@@ -128,9 +128,40 @@ def mark_papers_checked(paper_ids: list[str], checked_at: datetime) -> None:
 
 
 def upsert_pathways(pathways: list[Pathway]) -> int:
-    """Upsert a batch of Pathway nodes (from GO's biological_process branch, and later
-    PlantCyc/MetaCyc). Returns the count of newly created nodes."""
+    """Upsert a batch of Pathway nodes (from GO's biological_process branch, and
+    Reactome). Returns the count of newly created nodes."""
     if not pathways:
         return 0
     params = [{"pathway_id": p.pathway_id, "name": p.name, "source_db": p.source_db} for p in pathways]
     return run_write(_UPSERT_PATHWAYS, pathways=params)[0]["new_pathways"]
+
+
+# Plain Cypher/Bolt MERGE -- never touches Paper, so no vector-index-bug risk (same
+# reasoning as _UPSERT_PATHWAYS above). MERGEs the Gene node too (not just MATCH): most
+# of Reactome's ~12K human genes don't have a Gene node yet (PubTator3 MENTIONS only
+# creates one when a paper happens to mention that gene), and gating pathway data on
+# literature-processing catching up first would leave this mostly a no-op today. A
+# Reactome-bootstrapped Gene node has no `name` yet (Reactome's file doesn't give gene
+# symbols) -- MENTIONS will fill it in later if/when the literature catches up, keyed
+# on the same gene_id.
+_UPSERT_PARTICIPATES_IN = """
+UNWIND $edges AS e
+MERGE (g:Gene {gene_id: e.gene_id})
+WITH g, e
+MATCH (pw:Pathway {pathway_id: e.pathway_id})
+MERGE (g)-[edge:PARTICIPATES_IN]->(pw)
+ON CREATE SET edge._is_new = true
+SET edge.evidence_code = e.evidence_code
+WITH edge, coalesce(edge._is_new, false) AS is_new
+REMOVE edge._is_new
+RETURN count(CASE WHEN is_new THEN 1 END) AS new_edges
+"""
+
+
+def upsert_participates_in(edges: list[ParticipatesIn]) -> int:
+    """Upsert PARTICIPATES_IN edges (Gene -> Pathway, currently from Reactome).
+    Returns the count of newly created edges."""
+    if not edges:
+        return 0
+    params = [{"gene_id": e.gene_id, "pathway_id": e.pathway_id, "evidence_code": e.evidence_code} for e in edges]
+    return run_write(_UPSERT_PARTICIPATES_IN, edges=params)[0]["new_edges"]

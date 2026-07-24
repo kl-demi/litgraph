@@ -11,9 +11,17 @@ class EntityMention(BaseModel):
 
 class Pathway(BaseModel):
     """A biological process/pathway node -- species-agnostic ones from GO's
-    biological_process branch (source_db="GO", pathway_id a GO id like "GO:0009611"),
-    species-specific ones from PlantCyc/MetaCyc later (see docs/plant_schema.md)."""
+    biological_process branch (source_db="GO"), human-specific ones from Reactome
+    (source_db="Reactome"). See docs/spoke_schema.md."""
 
     pathway_id: str
     name: str
     source_db: str
+
+
+class ParticipatesIn(BaseModel):
+    """One Gene -> Pathway membership claim (currently sourced from Reactome)."""
+
+    gene_id: str  # namespaced, e.g. "ncbigene:7157" -- matches the existing Gene.gene_id key
+    pathway_id: str  # bare native id, e.g. "R-HSA-111448"
+    evidence_code: str  # e.g. "TAS", "IEA"
