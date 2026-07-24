@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime
 
 import httpx
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked, run_read, run_write
@@ -20,6 +21,12 @@ SET s.last_seen_date = $last_seen_date, s.last_run_at = $last_run_at
 """
 
 _EFETCH_BATCH_SIZE = 200
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
 
 
 def get_checkpoint(job: str = "pubmed_daily") -> datetime | None:
@@ -53,6 +60,12 @@ def _entrez_params() -> dict:
     return params
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _esearch(client: httpx.Client, mesh_terms: str, since: datetime | None, max_results: int) -> list[str]:
     params = {
         **_entrez_params(),
@@ -71,6 +84,12 @@ def _esearch(client: httpx.Client, mesh_terms: str, since: datetime | None, max_
     return response.json()["esearchresult"].get("idlist", [])
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _efetch(client: httpx.Client, pmids: list[str]) -> bytes:
     response = client.post(
         "/efetch.fcgi",
@@ -81,6 +100,12 @@ def _efetch(client: httpx.Client, pmids: list[str]) -> bytes:
     return response.content
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _esearch_with_history(
     client: httpx.Client, mesh_terms: str, start_date: date | None, end_date: date | None
 ) -> tuple[str, str, int]:
@@ -109,6 +134,12 @@ def _esearch_with_history(
     return result["webenv"], result["querykey"], int(result["count"])
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _efetch_history_batch(client: httpx.Client, web_env: str, query_key: str, retstart: int, retmax: int) -> bytes:
     response = client.post(
         "/efetch.fcgi",
