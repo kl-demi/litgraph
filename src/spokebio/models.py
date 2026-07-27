@@ -25,3 +25,12 @@ class ParticipatesIn(BaseModel):
     gene_id: str  # namespaced, e.g. "ncbigene:7157" -- matches the existing Gene.gene_id key
     pathway_id: str  # bare native id, e.g. "R-HSA-111448"
     evidence_code: str  # e.g. "TAS", "IEA"
+
+
+class Produces(BaseModel):
+    """One Pathway -> Compound production claim (currently sourced from Reactome, via
+    the ChEBI<->MeSH crosswalk -- see ingest/chebi_mesh_crosswalk.py)."""
+
+    pathway_id: str  # bare native id, e.g. "R-HSA-111448"
+    compound_id: str  # namespaced, e.g. "mesh:D009569" -- matches the existing Compound.compound_id key
+    evidence_code: str  # e.g. "TAS", "IEA"

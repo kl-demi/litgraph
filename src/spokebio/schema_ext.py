@@ -2,7 +2,7 @@ from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 
 _VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway"]
-_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN"]
+_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN", "PRODUCES"]
 
 # (vertex_type, key_property) -- Compound's key is named compound_id rather than
 # chebi_id: see ingest/pubtator.py's module docstring for why. PubtatorChecked is a

@@ -4,10 +4,8 @@ from pathlib import Path
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from spokebio.models import ParticipatesIn, Pathway
+from spokebio.models import ParticipatesIn, Pathway, Produces
 
-# Confirmed live (2026-07-24): a plain public directory, HTTP 200, no license/account/
-# API key needed -- unlike PlantCyc/MetaCyc.
 REACTOME_BASE_URL = "https://reactome.org/download/current"
 DEFAULT_REACTOME_DIR = "data/reactome"
 _HUMAN_SPECIES = "Homo sapiens"
@@ -86,4 +84,32 @@ def extract_participates_in(path: str | Path) -> list[ParticipatesIn]:
         ):
             continue
         best[key] = ParticipatesIn(gene_id=f"ncbigene:{gene_id}", pathway_id=pathway_id, evidence_code=evidence_code)
+    return list(best.values())
+
+
+def extract_produces(path: str | Path, crosswalk: dict[str, str]) -> list[Produces]:
+    """Filter ChEBI2Reactome.txt (chebi_id, pathway_id, url, pathway_name,
+    evidence_code, species) to Homo sapiens, resolving each bare ChEBI id to an
+    existing Compound.compound_id via ``crosswalk`` (see chebi_mesh_crosswalk.py --
+    only ~33.7% of Reactome's human ChEBI ids resolve this way; unresolved ones are
+    silently dropped, since there's no other key to upsert a Compound against without
+    inventing a second, chebi:-namespaced identity for compounds already keyed by MeSH
+    id). Dedupes (compound, pathway) pairs by keeping the higher-trust evidence code
+    when a pair appears via both (same issue as extract_participates_in: confirmed
+    live, 1,056 duplicate pairs in the real file).
+    """
+    best: dict[tuple[str, str], Produces] = {}
+    for chebi_id, pathway_id, _url, _pathway_name, evidence_code, species in _iter_tab_delimited_rows(path, 6):
+        if species != _HUMAN_SPECIES:
+            continue
+        compound_id = crosswalk.get(f"CHEBI:{chebi_id}")
+        if compound_id is None:
+            continue
+        key = (compound_id, pathway_id)
+        existing = best.get(key)
+        if existing is not None and _EVIDENCE_RANK.get(evidence_code, 99) >= _EVIDENCE_RANK.get(
+            existing.evidence_code, 99
+        ):
+            continue
+        best[key] = Produces(compound_id=compound_id, pathway_id=pathway_id, evidence_code=evidence_code)
     return list(best.values())

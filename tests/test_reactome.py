@@ -1,6 +1,11 @@
-from spokebio.ingest.reactome import ensure_reactome_file, extract_human_pathways, extract_participates_in
-from spokebio.models import ParticipatesIn, Pathway
-from spokebio.upsert import upsert_participates_in, upsert_pathways
+from spokebio.ingest.reactome import (
+    ensure_reactome_file,
+    extract_human_pathways,
+    extract_participates_in,
+    extract_produces,
+)
+from spokebio.models import ParticipatesIn, Pathway, Produces
+from spokebio.upsert import upsert_participates_in, upsert_pathways, upsert_produces
 
 _PATHWAYS_FIXTURE = (
     "R-HSA-164843\t2-LTR circle formation\tHomo sapiens\n"
@@ -59,6 +64,73 @@ def test_extract_participates_in_dedupes_to_one_edge_per_pair(tmp_path):
     edges = extract_participates_in(path)
 
     assert len(edges) == 2  # not 3 -- the TAS/IEA duplicate collapses to one
+
+
+# CHEBI:16480 (nitric oxide) x R-HSA-1237112 appears twice with conflicting evidence
+# codes, mirroring NCBI2Reactome.txt's real duplication issue. CHEBI:99999999 has no
+# crosswalk entry -- should be silently dropped, not errored.
+_CHEBI_EDGES_FIXTURE = (
+    "16480\tR-HSA-1237112\thttps://reactome.org/x\tNitric oxide pathway\tTAS\tHomo sapiens\n"
+    "16480\tR-HSA-1237112\thttps://reactome.org/x\tNitric oxide pathway\tIEA\tHomo sapiens\n"
+    "16480\tR-HSA-9634600\thttps://reactome.org/x\tOther nitric oxide pathway\tTAS\tHomo sapiens\n"
+    "99999999\tR-HSA-000000\thttps://reactome.org/x\tUnresolvable compound\tTAS\tHomo sapiens\n"
+    "16480\tR-HSA-mouse\thttps://reactome.org/x\tMouse-only row\tTAS\tMus musculus\n"
+)
+_CHEBI_CROSSWALK = {"CHEBI:16480": "mesh:D009569"}
+
+
+def test_extract_produces_resolves_via_crosswalk_and_filters_species(tmp_path):
+    path = tmp_path / "ChEBI2Reactome.txt"
+    path.write_text(_CHEBI_EDGES_FIXTURE)
+
+    edges = extract_produces(path, _CHEBI_CROSSWALK)
+
+    edge_by_pathway = {e.pathway_id: e for e in edges}
+    # unresolvable compound and mouse-only row both dropped
+    assert set(edge_by_pathway) == {"R-HSA-1237112", "R-HSA-9634600"}
+    assert edge_by_pathway["R-HSA-9634600"].compound_id == "mesh:D009569"
+
+
+def test_extract_produces_prefers_higher_trust_evidence_code(tmp_path):
+    path = tmp_path / "ChEBI2Reactome.txt"
+    path.write_text(_CHEBI_EDGES_FIXTURE)
+
+    edges = extract_produces(path, _CHEBI_CROSSWALK)
+
+    duplicated = next(e for e in edges if e.pathway_id == "R-HSA-1237112")
+    assert duplicated.evidence_code == "TAS"
+
+
+def test_extract_produces_dedupes_to_one_edge_per_pair(tmp_path):
+    path = tmp_path / "ChEBI2Reactome.txt"
+    path.write_text(_CHEBI_EDGES_FIXTURE)
+
+    edges = extract_produces(path, _CHEBI_CROSSWALK)
+
+    assert len(edges) == 2  # not 3 -- the TAS/IEA duplicate collapses to one
+
+
+def test_upsert_produces_writes_params(mocker):
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    mock_run_write.return_value = [{"new_edges": 1}]
+
+    new_count = upsert_produces(
+        [Produces(compound_id="mesh:D009569", pathway_id="R-HSA-1237112", evidence_code="TAS")]
+    )
+
+    assert new_count == 1
+    call = mock_run_write.call_args
+    assert call.kwargs["edges"][0] == {
+        "pathway_id": "R-HSA-1237112",
+        "compound_id": "mesh:D009569",
+        "evidence_code": "TAS",
+    }
+
+
+def test_upsert_produces_noop_on_empty(mocker):
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    assert upsert_produces([]) == 0
+    mock_run_write.assert_not_called()
 
 
 def test_ensure_reactome_file_skips_download_if_already_cached(tmp_path, mocker):

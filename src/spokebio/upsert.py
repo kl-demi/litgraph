@@ -3,7 +3,7 @@ from datetime import datetime
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
-from spokebio.models import EntityMention, ParticipatesIn, Pathway
+from spokebio.models import EntityMention, ParticipatesIn, Pathway, Produces
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
@@ -59,8 +59,7 @@ ON CREATE SET c.checked_at = $checked_at
 """
 
 # Plain Cypher/Bolt MERGE (unlike upsert_mentions above) -- Pathway nodes don't touch
-# Paper at all in this pass (no Gene/Compound membership edges yet, see
-# docs/plant_schema.md), so there's no vector-index-bug risk to route around.
+# Paper at all in this pass, so there's no vector-index-bug risk to route around.
 _UPSERT_PATHWAYS = """
 UNWIND $pathways AS p
 MERGE (pw:Pathway {pathway_id: p.pathway_id})
@@ -165,3 +164,31 @@ def upsert_participates_in(edges: list[ParticipatesIn]) -> int:
         return 0
     params = [{"gene_id": e.gene_id, "pathway_id": e.pathway_id, "evidence_code": e.evidence_code} for e in edges]
     return run_write(_UPSERT_PARTICIPATES_IN, edges=params)[0]["new_edges"]
+
+
+# Plain Cypher/Bolt MERGE -- same reasoning as _UPSERT_PARTICIPATES_IN: never touches
+# Paper, so no vector-index-bug risk. MERGEs the Compound node too, but only ever under
+# the mesh: namespace already used by PubTator-sourced Compounds -- the crosswalk (see
+# ingest/chebi_mesh_crosswalk.py) is what makes this safe; extract_produces() never
+# passes a bare ChEBI id here; unresolved ones were already dropped upstream.
+_UPSERT_PRODUCES = """
+UNWIND $edges AS e
+MERGE (c:Compound {compound_id: e.compound_id})
+WITH c, e
+MATCH (pw:Pathway {pathway_id: e.pathway_id})
+MERGE (pw)-[edge:PRODUCES]->(c)
+ON CREATE SET edge._is_new = true
+SET edge.evidence_code = e.evidence_code
+WITH edge, coalesce(edge._is_new, false) AS is_new
+REMOVE edge._is_new
+RETURN count(CASE WHEN is_new THEN 1 END) AS new_edges
+"""
+
+
+def upsert_produces(edges: list[Produces]) -> int:
+    """Upsert PRODUCES edges (Pathway -> Compound, currently from Reactome via the
+    ChEBI<->MeSH crosswalk). Returns the count of newly created edges."""
+    if not edges:
+        return 0
+    params = [{"pathway_id": e.pathway_id, "compound_id": e.compound_id, "evidence_code": e.evidence_code} for e in edges]
+    return run_write(_UPSERT_PRODUCES, edges=params)[0]["new_edges"]

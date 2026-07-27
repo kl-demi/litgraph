@@ -4,11 +4,29 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from litgraph.db.neo4j_client import run_read
+from spokebio.ingest.chebi_mesh_crosswalk import (
+    DEFAULT_MESH_YEAR,
+    build_crosswalk,
+    ensure_biomappings_file,
+    ensure_chebi_file,
+    ensure_mesh_file,
+)
 from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
-from spokebio.ingest.reactome import ensure_reactome_file, extract_human_pathways, extract_participates_in
-from spokebio.models import EntityMention, ParticipatesIn, Pathway
-from spokebio.upsert import mark_papers_checked, upsert_mentions, upsert_participates_in, upsert_pathways
+from spokebio.ingest.reactome import (
+    ensure_reactome_file,
+    extract_human_pathways,
+    extract_participates_in,
+    extract_produces,
+)
+from spokebio.models import EntityMention, ParticipatesIn, Pathway, Produces
+from spokebio.upsert import (
+    mark_papers_checked,
+    upsert_mentions,
+    upsert_participates_in,
+    upsert_pathways,
+    upsert_produces,
+)
 
 console = Console()
 
@@ -132,24 +150,32 @@ def run_go_ingest(
     return totals
 
 
-def run_reactome_ingest(batch_size: int = 500, force_download: bool = False) -> dict[str, int]:
-    """Ingest Reactome's human pathways (ReactomePathways.txt) as Pathway nodes, and
+def run_reactome_ingest(
+    batch_size: int = 500, force_download: bool = False, mesh_year: int = DEFAULT_MESH_YEAR
+) -> dict[str, int]:
+    """Ingest Reactome's human pathways (ReactomePathways.txt) as Pathway nodes;
     NCBI Gene -> Pathway associations (NCBI2Reactome.txt, the base file -- not
     _All_Levels, see docs/spoke_schema.md's open-decision note on that tradeoff) as
-    PARTICIPATES_IN edges.
+    PARTICIPATES_IN edges; and ChEBI2Reactome.txt's Pathway -> Compound associations as
+    PRODUCES edges, resolved through the ChEBI<->MeSH crosswalk (see
+    ingest/chebi_mesh_crosswalk.py -- only ~33.7% of referenced ChEBI ids resolve;
+    the rest are silently dropped, not a bug).
 
-    Unlike the GO/PubTator pieces, this creates Gene nodes on demand (see
-    upsert.py's docstring on upsert_participates_in) -- most of Reactome's human genes
-    won't have a Gene node yet from literature-derived MENTIONS alone.
+    Unlike the GO/PubTator pieces, this creates Gene/Compound nodes on demand (see
+    upsert.py's docstrings) -- most of Reactome's human genes/compounds won't already
+    have a node from literature-derived MENTIONS alone.
     """
     pathways_path = ensure_reactome_file("ReactomePathways.txt", force=force_download)
     edges_path = ensure_reactome_file("NCBI2Reactome.txt", force=force_download)
+    chebi_edges_path = ensure_reactome_file("ChEBI2Reactome.txt", force=force_download)
 
     totals = {
         "pathways_processed": 0,
         "new_pathways": 0,
         "edges_processed": 0,
         "new_participates_in_edges": 0,
+        "produces_processed": 0,
+        "new_produces_edges": 0,
     }
 
     with _progress() as progress:
@@ -191,5 +217,33 @@ def run_reactome_ingest(batch_size: int = 500, force_download: bool = False) -> 
     console.log(
         f"reactome-participates-in: processed {totals['edges_processed']} gene-pathway pairs, "
         f"+{totals['new_participates_in_edges']} new PARTICIPATES_IN edges"
+    )
+
+    compounds_path = ensure_chebi_file("compounds.tsv.gz", force=force_download)
+    database_accession_path = ensure_chebi_file("database_accession.tsv.gz", force=force_download)
+    mesh_d_path = ensure_mesh_file(f"d{mesh_year}.bin", year=mesh_year, force=force_download)
+    mesh_c_path = ensure_mesh_file(f"c{mesh_year}.bin", year=mesh_year, force=force_download)
+    biomappings_path = ensure_biomappings_file(force=force_download)
+    crosswalk = build_crosswalk(compounds_path, database_accession_path, [mesh_d_path, mesh_c_path], biomappings_path)
+
+    produces_edges = extract_produces(chebi_edges_path, crosswalk)
+    with _progress() as progress:
+        task = progress.add_task("Writing PRODUCES edges", total=len(produces_edges))
+        produces_batch: list[Produces] = []
+        for edge in produces_edges:
+            produces_batch.append(edge)
+            if len(produces_batch) >= batch_size:
+                totals["new_produces_edges"] += upsert_produces(produces_batch)
+                totals["produces_processed"] += len(produces_batch)
+                progress.update(task, advance=len(produces_batch))
+                produces_batch = []
+        if produces_batch:
+            totals["new_produces_edges"] += upsert_produces(produces_batch)
+            totals["produces_processed"] += len(produces_batch)
+            progress.update(task, advance=len(produces_batch))
+
+    console.log(
+        f"reactome-produces: processed {totals['produces_processed']} pathway-compound pairs, "
+        f"+{totals['new_produces_edges']} new PRODUCES edges"
     )
     return totals
