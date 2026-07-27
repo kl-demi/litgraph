@@ -65,6 +65,37 @@ def test_enrich_maps_references_and_citations(mocker):
     client.close()
 
 
+def test_enrich_survives_short_response(mocker):
+    # Regression test: S2's batch endpoint can silently omit an id from the response
+    # array (not even a null placeholder), instead of keeping every id lined up with a
+    # same-index response entry. Reproduces a production crash where a 3-id batch got
+    # back only 2 items and zip(..., strict=True) raised ValueError.
+    payload = [
+        {"paperId": "s2-1", "externalIds": {"ArXiv": "2101.00001"}, "citationCount": 5,
+         "referenceCount": 0, "influentialCitationCount": 0, "references": [], "citations": []},
+        None,
+        # third id's entry is missing entirely -- response is shorter than the request
+    ]
+
+    client = SemanticScholarClient()
+    mocker.patch.object(client, "_throttle")
+    mocker.patch.object(client._client, "post", return_value=FakeResponse(200, payload))
+
+    results = client.enrich(
+        [("2101.00001", "2101.00001"), ("2101.99999", "2101.99999"), ("2101.55555", "2101.55555")],
+        id_prefix="ARXIV",
+    )
+
+    assert len(results) == 3
+    found = next(r for r in results if r.paper_id == "2101.00001")
+    assert found.s2_paper_id == "s2-1"
+    for paper_id in ("2101.99999", "2101.55555"):
+        not_found = next(r for r in results if r.paper_id == paper_id)
+        assert not_found.s2_paper_id is None
+        assert not_found.enriched_at is not None
+    client.close()
+
+
 def test_enrich_retries_on_429(mocker):
     payload = [{"paperId": "s2-1", "externalIds": {"ArXiv": "2101.00001"}, "citationCount": 0,
                 "referenceCount": 0, "influentialCitationCount": 0, "references": [], "citations": []}]

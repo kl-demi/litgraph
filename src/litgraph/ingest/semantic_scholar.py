@@ -11,6 +11,8 @@ from litgraph.models import CitationStub, EnrichmentResult
 
 console = Console()
 
+_ID_PREFIX_TO_EXTERNAL_KEY = {"ARXIV": "ArXiv", "PMID": "PubMed"}
+
 _FIELDS = ",".join(
     [
         "externalIds",
@@ -139,12 +141,23 @@ class SemanticScholarClient:
     def _enrich_batch(self, pairs: list[tuple[str, str]], id_prefix: str) -> list[EnrichmentResult]:
         items = self._post_batch([external_id for _, external_id in pairs], id_prefix)
         enriched_at = datetime.now(UTC)
+        # S2's batch endpoint can silently omit an id from the response array entirely
+        # (not even a null placeholder), breaking positional alignment with `pairs` --
+        # so match back by the returned externalIds instead of zipping by index.
+        external_key = _ID_PREFIX_TO_EXTERNAL_KEY[id_prefix]
+        by_external_id = {
+            item["externalIds"][external_key]: item
+            for item in items
+            if item and item.get("externalIds", {}).get(external_key)
+        }
+        if len(items) != len(pairs):
+            console.log(f"enrich: S2 {id_prefix} batch returned {len(items)} items for {len(pairs)} requested ids")
         out: list[EnrichmentResult] = []
-        for (paper_id, _), item in zip(pairs, items, strict=True):
-            # Always emit a result -- even a "not found in S2" paper must get
-            # `enriched_at` stamped, or it keeps reappearing at the front of
-            # _FIND_UNENRICHED's result window on every future `enrich` run,
-            # starving papers that haven't been attempted yet.
+        for paper_id, external_id in pairs:
+            item = by_external_id.get(external_id)
+            # Mark papers "not found in S2" with `enriched_at` stamps, or they keep 
+            # reappearing at the front of _FIND_UNENRICHED's result window on every 
+            # future `enrich` run
             if not item:
                 out.append(EnrichmentResult(paper_id=paper_id, enriched_at=enriched_at))
                 continue
