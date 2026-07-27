@@ -323,13 +323,16 @@ def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     batch: list[Paper] = []
     total = 0
     newest_seen: datetime | None = None
+    today = datetime.now(UTC).date()
 
     with _progress(determinate=False) as progress:
         task = progress.add_task("Fetching new PubMed papers", total=None)
         for paper in fetch_new_pubmed_papers(mesh_terms, since=since):
             batch.append(paper)
             published = paper.published_date
-            if published is not None:
+            # PubMed's PubDate is the journal issue's cover date, which can be
+            # dated months ahead and falsely push the checkpoint into the future
+            if published is not None and published <= today:
                 published_dt = datetime.combine(published, datetime.min.time())
                 if newest_seen is None or published_dt > newest_seen:
                     newest_seen = published_dt
