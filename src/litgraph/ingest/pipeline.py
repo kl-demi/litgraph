@@ -62,8 +62,8 @@ def _embed_and_upsert(papers: list[Paper]) -> None:
     except (httpx.HTTPStatusError, httpx.TransportError) as exc:
         # Upsert without embeddings to avoid losing this whole batch to a 
         # transient embedding-service outage.
-        # scripts/backfill_embeddings.py finds and re-embeds any Paper with embedding IS
-        # NULL later, so this is recoverable rather than a silent permanent gap.
+        # scripts/backfill_embeddings.py can find and re-embed any Paper without
+        # an embedding later.
         console.log(f"embed: service unavailable after retries, upserting {len(papers)} papers without embeddings ({exc})")
         upsert_papers(papers)
         return
@@ -237,16 +237,16 @@ def run_backload_pubmed_api(
     limit: int | None = None,
 ) -> int:
     """Historical backload of PubMed papers matching ``mesh_terms``, fetched entirely via
-    NCBI E-utilities (no bulk baseline files) -- NCBI filters server-side by the query,
-    so this only transfers matching records rather than the full corpus.
+    NCBI E-utilities (no bulk baseline files). This is to avoid downloading the full corpus
+    which is 40+GB compressed/ 120+ GB uncompressed XML.
 
     Walks newest-published-first and checkpoints the oldest ``published_date`` reached
     after every batch, keyed by ``mesh_terms`` -- an interrupted run resumes from there
-    on the next invocation instead of re-walking from "now" (and re-upserting papers
-    already ingested). Pass an explicit ``end_date`` to bypass the checkpoint and pin a
-    specific historical slice instead. ``limit`` stops this run cleanly (checkpoint
-    written, run logged) after that many papers, to bound a single invocation's cost --
-    the next call resumes from the checkpoint same as if it had been killed. Returns
+    on the next invocation instead of re-walking from "now". Pass an explicit ``end_date`` 
+    to bypass the checkpoint and pin a specific historical slice instead. 
+    
+    ``limit`` stops this run cleanly after that many papers, to bound a single invocation's 
+    cost -- the next call resumes from the checkpoint same as if it had been killed. Returns
     count ingested.
     """
     started_at = datetime.now()
@@ -406,11 +406,10 @@ def run_enrichment(limit: int = 500) -> int:
 
 
 def run_backfill_embeddings(batch_size: int = 200) -> int:
-    """Embed any fully-ingested paper that's missing an embedding -- e.g. ones upserted
-    during an embedding-service outage by _embed_and_upsert()'s fallback path. Uses the
-    title/abstract already stored in the graph rather than re-fetching from an external
-    API, so it works regardless of source (arxiv, kaggle, pubmed, ...). Returns count
-    embedded."""
+    """Embed any ingested paper that's missing an embedding. Uses the title/abstract 
+    already stored in the graph rather than re-fetching from an external API, so it works 
+    regardless of source (arxiv, kaggle, pubmed, ...). Returns count embedded.
+    """
     started_at = datetime.now()
     total = 0
     with _progress(determinate=False) as progress:
