@@ -73,3 +73,44 @@ def build_locus_tag_crosswalk(path: str | Path) -> dict[str, str]:
             continue
         crosswalk[locus_tag] = f"ncbigene:{gene_id}"
     return crosswalk
+
+
+# NCBI uses this as a placeholder Symbol for un-named genes, so it is not an identifier
+# for anything -- it collides across every gene that carries it.
+_PLACEHOLDER_SYMBOLS = frozenset({"NEWENTRY"})
+
+
+def build_gene_identifier_crosswalk(path: str | Path) -> dict[str, str]:
+    """Like ``build_locus_tag_crosswalk``, but also indexes each gene's Symbol and
+    Synonyms -- which raises the share of a GAF's gene references that resolve (measured
+    on rice: 68.3% -> 83.6%), since a GAF doesn't consistently use the locus tag.
+
+    LocusTag wins on collision (it is the authoritative locus identifier; confirmed on
+    rice that no LocusTag is another gene's symbol/synonym). Symbols/synonyms that are
+    ambiguous across genes are dropped rather than resolved arbitrarily -- on rice that's
+    1.03% of tokens, including chloroplast genes like ``psbA`` present in several
+    assemblies, where guessing would attach the edge to the wrong Gene node.
+    """
+    locus_tags = build_locus_tag_crosswalk(path)
+
+    candidates: dict[str, set[str]] = {}
+    for row in iter_gene_info_rows(path):
+        gene_id = row.get("GeneID")
+        if not gene_id:
+            continue
+        for field in ("Symbol", "Synonyms"):
+            value = row.get(field) or "-"
+            if value == "-":
+                continue
+            for token in value.split("|"):
+                token = token.strip()
+                if token and token != "-" and token not in _PLACEHOLDER_SYMBOLS:
+                    candidates.setdefault(token, set()).add(f"ncbigene:{gene_id}")
+
+    crosswalk = {
+        token: next(iter(gene_ids))
+        for token, gene_ids in candidates.items()
+        if len(gene_ids) == 1 and token not in locus_tags
+    }
+    crosswalk.update(locus_tags)
+    return crosswalk

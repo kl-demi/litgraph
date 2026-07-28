@@ -11,6 +11,9 @@ from spokebio.ingest.chebi_mesh_crosswalk import (
     ensure_chebi_file,
     ensure_mesh_file,
 )
+from spokebio.ingest.gaf import DEFAULT_SPECIES_CODE, ensure_gaf_file
+from spokebio.ingest.gaf import extract_participates_in as extract_gaf_participates_in
+from spokebio.ingest.gene_crosswalk import build_gene_identifier_crosswalk, ensure_gene_info_file
 from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.ingest.pubtator import EXPORT_BATCH_SIZE, PubTatorClient
 from spokebio.ingest.reactome import (
@@ -245,5 +248,69 @@ def run_reactome_ingest(
     console.log(
         f"reactome-produces: processed {totals['produces_processed']} pathway-compound pairs, "
         f"+{totals['new_produces_edges']} new PRODUCES edges"
+    )
+    return totals
+
+
+def run_gaf_ingest(
+    species_code: str = DEFAULT_SPECIES_CODE,
+    organism: str = "Oryza_sativa",
+    batch_size: int = 500,
+    force_download: bool = False,
+) -> dict[str, int]:
+    """Ingest one species' GO annotations as Gene -> Pathway PARTICIPATES_IN edges.
+
+    The non-human path to pathway edges: Reactome doesn't cover plant species, so
+    ``run_reactome_ingest`` can't serve a plant corpus. Pairs GO's per-species GAF 
+    with NCBI's gene_info file for the same species to
+    resolve gene references onto the existing ``ncbigene:`` Gene keys.
+
+    Requires ``run_go_ingest`` to have run first -- the PARTICIPATES_IN upsert MATCHes
+    Pathway nodes rather than creating them, so edges to absent terms are silently
+    dropped.
+    """
+    gaf_path = ensure_gaf_file(species_code, force=force_download)
+    gene_info_path = ensure_gene_info_file(organism, force=force_download)
+
+    crosswalk = build_gene_identifier_crosswalk(gene_info_path)
+    console.log(f"gaf-participates-in: {len(crosswalk)} gene identifiers in the {organism} crosswalk")
+
+    extraction = extract_gaf_participates_in(gaf_path, crosswalk)
+    resolved = extraction.rows_considered - extraction.dropped_negated - extraction.dropped_unresolved
+    console.log(
+        f"gaf-participates-in: {extraction.rows_considered} biological_process rows -- "
+        f"dropped {extraction.dropped_negated} NOT-qualified, "
+        f"{extraction.dropped_unresolved} unresolvable to a gene "
+        f"({extraction.dropped_unresolved / extraction.rows_considered:.1%}), "
+        f"{extraction.dropped_duplicate} duplicate pairs; {resolved} annotations "
+        f"-> {len(extraction.edges)} distinct edges"
+    )
+
+    totals = {
+        "rows_considered": extraction.rows_considered,
+        "dropped_negated": extraction.dropped_negated,
+        "dropped_unresolved": extraction.dropped_unresolved,
+        "edges_processed": 0,
+        "new_participates_in_edges": 0,
+    }
+
+    with _progress() as progress:
+        task = progress.add_task("Writing PARTICIPATES_IN edges (GAF)", total=len(extraction.edges))
+        batch: list[ParticipatesIn] = []
+        for edge in extraction.edges:
+            batch.append(edge)
+            if len(batch) >= batch_size:
+                totals["new_participates_in_edges"] += upsert_participates_in(batch)
+                totals["edges_processed"] += len(batch)
+                progress.update(task, advance=len(batch))
+                batch = []
+        if batch:
+            totals["new_participates_in_edges"] += upsert_participates_in(batch)
+            totals["edges_processed"] += len(batch)
+            progress.update(task, advance=len(batch))
+
+    console.log(
+        f"gaf-participates-in: processed {totals['edges_processed']} gene-pathway pairs, "
+        f"+{totals['new_participates_in_edges']} new PARTICIPATES_IN edges"
     )
     return totals
