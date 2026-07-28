@@ -12,4 +12,3 @@ build/
 inspect_db.sql
 data/
 logs/
-docs/
