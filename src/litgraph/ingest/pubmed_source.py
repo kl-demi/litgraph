@@ -1,6 +1,6 @@
 import time
-from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -21,6 +21,33 @@ SET s.last_seen_date = $last_seen_date, s.last_run_at = $last_run_at
 """
 
 _EFETCH_BATCH_SIZE = 200
+
+# efetch refuses to page a history set past ~10,000 records -- it returns 400, not an
+# empty page, and 400 isn't retryable. So a query matching more than this has to be split
+# into date windows that each stay under it. See docs/known_bugs.md.
+_HISTORY_OFFSET_LIMIT = 9_500
+
+# Bisection bounds when the caller gives an open-ended range. The upper margin exists
+# because `maxdate` filters on Entrez's own pdat index, which carries ahead-of-print
+# dates -- a record indexed today can sit months in the future.
+_EARLIEST_PUBMED_DATE = date(1800, 1, 1)
+_FUTURE_MARGIN = timedelta(days=730)
+
+
+class _RateLimiter:
+    """Paces requests to the NCBI-documented ceiling. Window-splitting adds esearch calls
+    on top of the efetch stream, so both have to share one pacer."""
+
+    def __init__(self, requests_per_second: float) -> None:
+        self._min_interval = 1.0 / requests_per_second
+        self._last_at: float | None = None
+
+    def wait(self) -> None:
+        if self._last_at is not None:
+            elapsed = time.monotonic() - self._last_at
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+        self._last_at = time.monotonic()
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -145,6 +172,63 @@ def _esearch_with_history(
     stop=stop_after_attempt(5),
     reraise=True,
 )
+def _esearch_count(client: httpx.Client, mesh_terms: str, start_date: date, end_date: date) -> int:
+    """How many records match within one date window. ``retmax=0`` and no ``usehistory``,
+    so this costs one cheap request and allocates nothing on NCBI's history server."""
+    params = {
+        **_entrez_params(),
+        "db": "pubmed",
+        "term": mesh_terms,
+        "retmode": "json",
+        "retmax": 0,
+        "datetype": "pdat",
+        "mindate": start_date.strftime("%Y/%m/%d"),
+        "maxdate": end_date.strftime("%Y/%m/%d"),
+    }
+    response = client.get("/esearch.fcgi", params=params)
+    response.raise_for_status()
+    return int(response.json()["esearchresult"]["count"])
+
+
+def iter_date_windows(
+    count_fn: Callable[[date, date], int],
+    start_date: date,
+    end_date: date,
+    max_count: int = _HISTORY_OFFSET_LIMIT,
+) -> Iterator[tuple[date, date, int]]:
+    """Split an inclusive date range into windows that each match at most ``max_count``
+    records, yielding them newest-first.
+
+    Bisects on the date axis rather than assuming a fixed window (a year is far too big
+    for a broad MeSH query and wasteful for a narrow one), and skips empty subranges
+    outright, so the cost scales with how dense the corpus actually is.
+
+    A single day exceeding ``max_count`` can't be split further -- it is yielded anyway
+    and the caller will silently only see the first ``max_count`` of it. Callers should
+    surface that rather than let it pass as complete coverage.
+    """
+    if start_date > end_date:
+        return
+
+    count = count_fn(start_date, end_date)
+    if count == 0:
+        return
+    if count <= max_count or start_date == end_date:
+        yield start_date, end_date, count
+        return
+
+    midpoint = start_date + (end_date - start_date) // 2
+    # Newest half first, so a resumable caller walks backward through history.
+    yield from iter_date_windows(count_fn, midpoint + timedelta(days=1), end_date, max_count)
+    yield from iter_date_windows(count_fn, start_date, midpoint, max_count)
+
+
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _efetch_history_batch(client: httpx.Client, web_env: str, query_key: str, retstart: int, retmax: int) -> bytes:
     response = client.post(
         "/efetch.fcgi",
@@ -200,46 +284,87 @@ def fetch_historical_papers(
     end_date: date | None = None,
     batch_size: int = 200,
     limit: int | None = None,
+    on_window_complete: Callable[[date, int], None] | None = None,
 ) -> Iterator[Paper]:
     """Fetch *all* PubMed papers matching ``mesh_terms`` (optionally within a date range),
-    via NCBI's history server (``usehistory=y`` + ``retstart`` pagination), rather than
-    a single esearch call -- which caps at 10,000 results regardless of the requested
-    ``retmax``. Intended for a full historical backload scoped by MeSH terms, as an
-    alternative to downloading NCBI's bulk baseline files when disk space is tight,
-    since NCBI filters by the query server-side before anything is sent.
+    via NCBI's history server (``usehistory=y`` + ``retstart`` pagination). Intended for a
+    full historical backload scoped by MeSH terms, as an alternative to downloading NCBI's
+    bulk baseline files when disk space is tight, since NCBI filters by the query
+    server-side before anything is sent.
 
-    Yields newest-published-first (see ``_esearch_with_history``'s explicit sort) --
-    callers doing a long/resumable backload can checkpoint the oldest ``published_date``
-    seen so far and pass it back in as ``end_date`` to resume walking backward from
-    there, rather than re-fetching from "now" every time (see
-    ``run_backload_pubmed_api`` in ``ingest/pipeline.py``). ``limit`` stops yielding
-    (and therefore checkpointing) after that many papers, so a caller can bound one
-    invocation's cost and pick up the remainder on the next run.
+    A query matching more than ``_HISTORY_OFFSET_LIMIT`` records is split into date
+    windows that each stay under it, walked newest-first, because efetch cannot page a
+    history set past ~10,000 (see docs/known_bugs.md). Queries under that limit are
+    fetched in one pass, exactly as before.
+
+    ``on_window_complete`` is invoked after each window has been fully drained, with the
+    ``end_date`` a later run should resume from to continue backward. That is what makes
+    resuming reliable: the boundary is only recorded once everything above it has actually
+    been ingested, so it always moves.
+
+    ``limit`` is checked at **window boundaries**, not mid-window, so a bounded run can
+    overshoot by up to one window. That is deliberate -- stopping mid-window would leave
+    no resumable boundary to record, which is exactly how the old date-based checkpoint
+    could re-ingest the same records forever.
 
     Requires ``ncbi_email``/``ncbi_api_key`` to be set; rate-limited to the NCBI-documented
     ceiling (10 req/sec with an API key, 3 req/sec without).
     """
     settings = get_settings()
-    requests_per_second = 10.0 if settings.ncbi_api_key else 3.0
-    min_interval = 1.0 / requests_per_second
-    last_request_at: float | None = None
+    limiter = _RateLimiter(10.0 if settings.ncbi_api_key else 3.0)
     yielded = 0
 
     with httpx.Client(base_url=settings.ncbi_eutils_base_url, timeout=30.0) as client:
         web_env, query_key, count = _esearch_with_history(client, mesh_terms, start_date, end_date)
+        if count == 0:
+            return
 
-        for retstart in range(0, count, batch_size):
-            if last_request_at is not None:
-                elapsed = time.monotonic() - last_request_at
-                if elapsed < min_interval:
-                    time.sleep(min_interval - elapsed)
-            xml_bytes = _efetch_history_batch(client, web_env, query_key, retstart, batch_size)
-            last_request_at = time.monotonic()
+        if count <= _HISTORY_OFFSET_LIMIT:
+            # Common case: pageable in one pass, and the history set is already allocated.
+            windows: Iterator[tuple[date | None, date | None, int, str | None, str | None]] = iter(
+                [(start_date, end_date, count, web_env, query_key)]
+            )
+        else:
+            lo = start_date or _EARLIEST_PUBMED_DATE
+            hi = end_date or (date.today() + _FUTURE_MARGIN)
+            windows = (
+                (win_start, win_end, win_count, None, None)
+                for win_start, win_end, win_count in iter_date_windows(
+                    lambda s, e: _esearch_count_paced(client, mesh_terms, s, e, limiter),
+                    lo,
+                    hi,
+                    max_count=_HISTORY_OFFSET_LIMIT,
+                )
+            )
 
-            for article_el in iter_pubmed_articles(xml_bytes):
-                fields = parse_pubmed_article(article_el)
-                if fields["pmid"]:
-                    yield _result_to_paper(fields)
-                    yielded += 1
-                    if limit is not None and yielded >= limit:
-                        return
+        for win_start, win_end, win_count, win_web_env, win_query_key in windows:
+            if win_web_env is None:
+                limiter.wait()
+                win_web_env, win_query_key, win_count = _esearch_with_history(
+                    client, mesh_terms, win_start, win_end
+                )
+                if win_count == 0:
+                    continue
+
+            reachable = min(win_count, _HISTORY_OFFSET_LIMIT)
+            for retstart in range(0, reachable, batch_size):
+                limiter.wait()
+                xml_bytes = _efetch_history_batch(client, win_web_env, win_query_key, retstart, batch_size)
+                for article_el in iter_pubmed_articles(xml_bytes):
+                    fields = parse_pubmed_article(article_el)
+                    if fields["pmid"]:
+                        yield _result_to_paper(fields)
+                        yielded += 1
+
+            if on_window_complete is not None and win_start is not None:
+                on_window_complete(win_start - timedelta(days=1), win_count - reachable)
+
+            if limit is not None and yielded >= limit:
+                return
+
+
+def _esearch_count_paced(
+    client: httpx.Client, mesh_terms: str, start_date: date, end_date: date, limiter: _RateLimiter
+) -> int:
+    limiter.wait()
+    return _esearch_count(client, mesh_terms, start_date, end_date)

@@ -147,11 +147,19 @@ def backload_pubmed_api(
     mesh_terms: str = typer.Option(None, "--mesh-terms", help="PubMed query string, e.g. a MeSH term expression"),
     start_date: str = typer.Option(None, "--start-date", help="YYYY-MM-DD"),
     end_date: str = typer.Option(None, "--end-date", help="YYYY-MM-DD"),
-    limit: int = typer.Option(None, "--limit", help="Max papers to ingest this run (resumes from here next time)"),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        help="Stop after roughly this many papers, finishing the current date window "
+        "(so it can overshoot); resumes from that boundary next run",
+    ),
     batch_size: int = typer.Option(200, "--batch-size"),
 ) -> None:
     """Historical backload of PubMed papers via NCBI E-utilities (no bulk file download --
-    NCBI filters server-side by --mesh-terms, so only matching records are transferred)."""
+    NCBI filters server-side by --mesh-terms, so only matching records are transferred).
+
+    Queries matching more than ~9,500 records are split into date windows, since efetch
+    cannot page a history set past ~10,000 (see docs/known_bugs.md)."""
     settings = get_settings()
     query = mesh_terms or settings.default_pubmed_mesh_terms
     total = run_backload_pubmed_api(

@@ -264,11 +264,46 @@ def run_backload_pubmed_api(
     total = 0
     earliest: date | None = None
     latest: date | None = None
+    unreachable = 0
+    windows_done = 0
 
-    with _progress(determinate=limit is not None) as progress:
-        task = progress.add_task("Backloading PubMed papers via API", total=limit)
+    with _progress(determinate=False) as progress:
+        task = progress.add_task("Backloading PubMed papers via API", total=None)
+
+        def flush() -> None:
+            nonlocal batch, total
+            if not batch:
+                return
+            _embed_and_upsert(batch)
+            total += len(batch)
+            progress.update(task, completed=total)
+            batch = []
+
+        def on_window_complete(resume_from: date, skipped: int) -> None:
+            """Record the resume boundary once a date window is fully ingested.
+
+            Flushes first: writing the checkpoint ahead of the upsert would permanently
+            skip whatever is still buffered if the run died in between.
+            """
+            nonlocal unreachable, windows_done
+            flush()
+            set_pubmed_checkpoint(datetime.combine(resume_from, datetime.min.time()), job=checkpoint_job)
+            windows_done += 1
+            if skipped:
+                unreachable += skipped
+                console.log(
+                    f"[yellow]backload-pubmed-api: {skipped} records in the single-day window "
+                    f"{resume_from + timedelta(days=1)} exceed efetch's paging limit and were "
+                    f"skipped -- that day cannot be split any further[/yellow]"
+                )
+
         for paper in fetch_historical_pubmed_papers(
-            mesh_terms, start_date=start_date, end_date=end_date, batch_size=batch_size, limit=limit
+            mesh_terms,
+            start_date=start_date,
+            end_date=end_date,
+            batch_size=batch_size,
+            limit=limit,
+            on_window_complete=on_window_complete,
         ):
             batch.append(paper)
             published = paper.published_date
@@ -278,20 +313,15 @@ def run_backload_pubmed_api(
                 if latest is None or published > latest:
                     latest = published
             if len(batch) >= batch_size:
-                _embed_and_upsert(batch)
-                total += len(batch)
-                progress.update(task, completed=total)
-                batch = []
-                if earliest is not None:
-                    set_pubmed_checkpoint(datetime.combine(earliest, datetime.min.time()), job=checkpoint_job)
-        if batch:
-            _embed_and_upsert(batch)
-            total += len(batch)
-            progress.update(task, completed=total)
-            if earliest is not None:
-                set_pubmed_checkpoint(datetime.combine(earliest, datetime.min.time()), job=checkpoint_job)
+                flush()
+        flush()
 
-    console.log(f"backload-pubmed-api: done, {total} papers upserted, batch spans {earliest} to {latest}")
+    console.log(
+        f"backload-pubmed-api: done, {total} papers upserted across {windows_done} date "
+        f"window(s), batch spans {earliest} to {latest}"
+    )
+    if unreachable:
+        console.log(f"[yellow]backload-pubmed-api: {unreachable} records total were unreachable[/yellow]")
     log_run(
         "backload-pubmed-api",
         started_at,
@@ -304,6 +334,8 @@ def run_backload_pubmed_api(
         limit=limit,
         earliest_published=earliest.isoformat() if earliest else None,
         latest_published=latest.isoformat() if latest else None,
+        date_windows_completed=windows_done,
+        unreachable_records=unreachable,
     )
     return total
 

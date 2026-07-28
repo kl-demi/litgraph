@@ -1,6 +1,6 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
-from litgraph.ingest.pubmed_source import fetch_historical_papers, fetch_new_papers
+from litgraph.ingest.pubmed_source import fetch_historical_papers, fetch_new_papers, iter_date_windows
 
 
 def _article_fragment(pmid: str) -> str:
@@ -162,7 +162,11 @@ def test_fetch_historical_papers_paginates_via_retstart(mocker):
         assert data["query_key"] == "1"
 
 
-def test_fetch_historical_papers_stops_at_limit(mocker):
+def test_fetch_historical_papers_limit_is_window_aligned(mocker):
+    """``limit`` is enforced at window boundaries, so a bounded run finishes the window
+    it is in rather than cutting mid-stream. Stopping mid-window would leave no resumable
+    boundary to record -- the failure mode that let the old date checkpoint re-ingest the
+    same records forever (docs/known_bugs.md)."""
     fake_client = FakeHistoryClient(
         count=3,
         batches_by_retstart={
@@ -183,9 +187,81 @@ def test_fetch_historical_papers_stops_at_limit(mocker):
         )
     )
 
-    assert [p.pmid for p in papers] == ["111"]
-    # Stops after the first matching article, never fetches the second retstart batch.
+    assert [p.pmid for p in papers] == ["111", "222", "333"]
+
+
+def test_fetch_historical_papers_reports_resume_boundary_per_window(mocker):
+    """The boundary handed back is the day *before* the window start, so a resuming run
+    continues strictly below what has already been ingested -- no overlap, no gap."""
+    fake_client = FakeHistoryClient(count=2, batches_by_retstart={0: _article_xml("111", "222")})
+    mocker.patch("litgraph.ingest.pubmed_source.httpx.Client", return_value=fake_client)
+    mocker.patch("time.sleep")
+
+    boundaries = []
+    list(
+        fetch_historical_papers(
+            '"Anatomy"[MeSH Major Topic]',
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 12, 31),
+            batch_size=2,
+            on_window_complete=lambda resume_from, unreachable: boundaries.append((resume_from, unreachable)),
+        )
+    )
+
+    assert boundaries == [(date(2019, 12, 31), 0)]
+
+
+def test_fetch_historical_papers_splits_when_over_the_offset_limit(mocker):
+    """A query above the efetch paging ceiling gets split into date windows instead of
+    dying with a 400 at retstart ~10,000."""
+    mocker.patch("litgraph.ingest.pubmed_source._HISTORY_OFFSET_LIMIT", 2)
+    fake_client = FakeHistoryClient(count=4, batches_by_retstart={0: _article_xml("111", "222")})
+    mocker.patch("litgraph.ingest.pubmed_source.httpx.Client", return_value=fake_client)
+    mocker.patch("time.sleep")
+    # The full span is over the ceiling; each half lands on it, so it splits exactly once.
+    mocker.patch(
+        "litgraph.ingest.pubmed_source._esearch_count",
+        side_effect=lambda client, terms, start, end: 4 if (end - start).days > 200 else 2,
+    )
+
+    papers = list(
+        fetch_historical_papers(
+            '"Anatomy"[MeSH Major Topic]',
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 12, 31),
+            batch_size=2,
+        )
+    )
+
+    # Two windows drained, so the same faked batch is yielded twice -- the point is that
+    # it split at all rather than paging one oversized history set.
+    assert len(papers) == 4
+    assert len(fake_client.post_calls) == 2
+    assert all(call[2]["retstart"] == 0 for call in fake_client.post_calls)
+
+
+def test_fetch_historical_papers_caps_retstart_at_the_offset_limit(mocker):
+    """An unsplittable single day bigger than the ceiling is truncated rather than paged
+    into a 400, and the shortfall is reported to the caller."""
+    mocker.patch("litgraph.ingest.pubmed_source._HISTORY_OFFSET_LIMIT", 2)
+    fake_client = FakeHistoryClient(count=6, batches_by_retstart={0: _article_xml("111", "222")})
+    mocker.patch("litgraph.ingest.pubmed_source.httpx.Client", return_value=fake_client)
+    mocker.patch("time.sleep")
+    mocker.patch("litgraph.ingest.pubmed_source._esearch_count", return_value=6)
+
+    shortfalls = []
+    list(
+        fetch_historical_papers(
+            '"Anatomy"[MeSH Major Topic]',
+            start_date=date(2020, 6, 1),
+            end_date=date(2020, 6, 1),  # single day: cannot be split further
+            batch_size=2,
+            on_window_complete=lambda resume_from, unreachable: shortfalls.append(unreachable),
+        )
+    )
+
     assert [call[2]["retstart"] for call in fake_client.post_calls] == [0]
+    assert shortfalls == [4]  # 6 matched, only 2 reachable
 
 
 def test_fetch_historical_papers_empty_when_no_matches(mocker):
@@ -196,3 +272,65 @@ def test_fetch_historical_papers_empty_when_no_matches(mocker):
     papers = list(fetch_historical_papers('"Anatomy"[MeSH Major Topic]'))
     assert papers == []
     assert fake_client.post_calls == []
+
+
+def test_iter_date_windows_yields_one_window_when_under_the_cap():
+    windows = list(iter_date_windows(lambda s, e: 50, date(2020, 1, 1), date(2020, 12, 31), max_count=100))
+
+    assert windows == [(date(2020, 1, 1), date(2020, 12, 31), 50)]
+
+
+def test_iter_date_windows_skips_empty_subranges():
+    """Cost should scale with how dense the corpus is, not with the span requested --
+    an open-ended range starting in 1800 must not cost a walk over every empty century."""
+    calls = []
+
+    def count_fn(start, end):
+        calls.append((start, end))
+        return 0
+
+    assert list(iter_date_windows(count_fn, date(1800, 1, 1), date(2026, 1, 1), max_count=10)) == []
+    assert calls == [(date(1800, 1, 1), date(2026, 1, 1))]
+
+
+def test_iter_date_windows_bisects_until_under_the_cap():
+    # 40 records spread evenly over the span, so each halving halves the count.
+    span_start, span_end = date(2020, 1, 1), date(2020, 12, 31)
+    total_days = (span_end - span_start).days + 1
+
+    def count_fn(start, end):
+        return round(40 * ((end - start).days + 1) / total_days)
+
+    windows = list(iter_date_windows(count_fn, span_start, span_end, max_count=10))
+
+    assert len(windows) == 4
+    assert all(count <= 10 for _, _, count in windows)
+
+
+def test_iter_date_windows_walks_newest_first_and_covers_the_span_exactly():
+    span_start, span_end = date(2020, 1, 1), date(2020, 12, 31)
+    total_days = (span_end - span_start).days + 1
+
+    windows = list(
+        iter_date_windows(
+            lambda s, e: round(40 * ((e - s).days + 1) / total_days), span_start, span_end, max_count=10
+        )
+    )
+
+    # Newest window first.
+    assert windows[0][1] == span_end
+    assert windows[-1][0] == span_start
+    # Contiguous, non-overlapping, and complete when read oldest-first.
+    oldest_first = list(reversed(windows))
+    assert oldest_first[0][0] == span_start
+    assert oldest_first[-1][1] == span_end
+    for earlier, later in zip(oldest_first, oldest_first[1:], strict=False):
+        assert later[0] == earlier[1] + timedelta(days=1)
+
+
+def test_iter_date_windows_yields_oversized_single_day_rather_than_looping():
+    """A single day over the cap can't be split -- it must still be yielded, or the
+    records in it become permanently unreachable."""
+    windows = list(iter_date_windows(lambda s, e: 5000, date(2020, 6, 1), date(2020, 6, 1), max_count=10))
+
+    assert windows == [(date(2020, 6, 1), date(2020, 6, 1), 5000)]
