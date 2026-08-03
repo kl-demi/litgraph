@@ -10,7 +10,7 @@ build/
 .vscode/
 .claude/
 inspect_db.sql
-data/
+data/*
 # ...except the hand-labelled eval worksheets: they are expensive to recreate (a human
 # reading abstracts) and are the reference any future extractor is scored against. Contents
 # are public PubMed titles/abstracts, so nothing sensitive is published.
