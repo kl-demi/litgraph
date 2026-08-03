@@ -1,6 +1,6 @@
 # LitGraph Operations Guide
 
-Operational reference for running and maintaining LitGraph's infrastructure: health
+Operational guide for running and maintaining LitGraph's infrastructure: health
 checks, data ingestion jobs, and ArcadeDB server setup/maintenance on AWS. For a log of
 serious bugs found during development (root cause, fix, current status), see
 [`known_bugs.md`](./known_bugs.md).
@@ -43,225 +43,26 @@ crontab -e        # open it in $EDITOR to hand-edit
 crontab -r        # remove it entirely (careful — no undo, no confirmation)
 ```
 
-## Spinning up a new database
+## Common Queries
+```sql
+-- Direct neighbors
+MATCH (d:Drug {name: 'Baricitinib'})-[r]-(n)
+RETURN d, r, n
 
-One ArcadeDB server can host many databases. To create a new database, give it a 
-name via `ARCADEDB_DATABASE`.
+-- Shortest path between two arbitrary nodes
+MATCH p = shortestPath(
+  (d:Drug {name:'Baricitinib'})-[*..4]-(dis:Disease {name:'COVID-19'})
+)
+RETURN p
 
-**Never edit `.env` to do this.** The AWS box's `.env` is what the daily cron jobs
-read to ingest real ArXiv and PubMed paper on human bio. Environment variables take 
-precedence over `.env` in `pydantic-settings`, so prefix the commands instead:
-
-```bash
-export ARCADEDB_DATABASE=rice
-export RUN_LOG_PATH=logs/rice_ingestion_runs.jsonl   # else `litgraph runs` mixes corpora
+-- Mechanism-pattern
+MATCH (drug:Drug)-[:INHIBITS]->(protein:Protein)
+      -[:PARTICIPATES_IN]->(pathway:Pathway)
+      -[:DYSREGULATED_IN]->(disease:Disease {name:'COVID-19'})
+WHERE drug.approved = true
+RETURN drug.name, protein.name, pathway.name
 ```
 
-**The flip side: forgetting the prefix silently targets `lg2`.** Both database layers —
-Bolt/Cypher (`neo4j_client.run_read`/`run_write`, via `_session_database()`) and HTTP/SQL
-(`arcadedb_http`) — take the database name from `settings.arcadedb_database`, which falls
-back to `.env`. So an unprefixed command doesn't error or warn; it just runs against
-production. Verified live: the same Cypher `MATCH ()-[r:PRODUCES]->() RETURN count(r)`
-returns 3,287 unprefixed (`lg2`) and 0 with `ARCADEDB_DATABASE=rice`.
-
-`export` in the shell you work in is safer than per-command prefixes for exactly this
-reason. When verifying over HTTP, putting the database in the URL path
-(`/api/v1/query/rice`) is immune to the mistake; Cypher has no equivalent — it always
-resolves through settings.
-
-### 1. Create the database and core schema
-
-```bash
-uv run litgraph init-db
-```
-
-Idempotent. Creates the database if absent, then `Paper`/`Author`/`Category`/`GraphStats`
-plus the unique, range, full-text, and vector indexes.
-
-### 2. Add the biology schema
-
-```bash
-uv run python -c "from spokebio.schema_ext import ensure_schema; ensure_schema()"
-```
-
-Adds `Organism`/`Gene`/`Compound`/`Pathway`/`PubtatorChecked` and the
-`MENTIONS`/`PARTICIPATES_IN`/`PRODUCES` edge types. The `scripts/` entry points call this
-themselves, so this step is only for confirming schema before ingesting.
-
-Verify both steps landed:
-
-```bash
-curl -s -u root:$ARCADEDB_PASSWORD $ARCADEDB_HTTP_URL/api/v1/databases
-curl -s -u root:$ARCADEDB_PASSWORD -X POST $ARCADEDB_HTTP_URL/api/v1/query/$ARCADEDB_DATABASE \
-  -H 'Content-Type: application/json' -d '{"language":"sql","command":"select from schema:types"}'
-```
-
-Expect 8 vertex types and 5 edge types.
-
-### 3. Pick the PubMed query, and verify its hit count first
-
-Check the query returns what you expect *before* ingesting — a wrong MeSH heading fails
-silently with zero results:
-
-```bash
-curl -s -G "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi" \
-  --data-urlencode "db=pubmed" --data-urlencode "retmode=json" \
-  --data-urlencode "email=$NCBI_EMAIL" --data-urlencode 'term="Oryza"[Mesh]'
-```
-
-Rice is an example of that trap: `"Oryza sativa"[Mesh]` returns **0**, because MeSH
-collapsed the species into the genus-level `Oryza` heading. `"Oryza"[Mesh]` returns
-~51,000; adding `OR rice[Title/Abstract]` widens to ~95,000 at the cost of false
-positives on "rice" as a surname.
-
-### 4. Backload the corpus
-
-Chunk it. Each chunk checkpoints as it goes and the next invocation resumes from the
-checkpoint, so an interrupted run costs nothing:
-
-```bash
-for i in $(seq 1 12); do
-  out=$(uv run litgraph backload-pubmed-api --mesh-terms '"Oryza"[Mesh]' --limit 5000 --batch-size 200)
-  echo "$out"
-  echo "$out" | grep -q "Backloaded 0 PubMed" && break
-done
-```
-
-Embeddings are written inline during backload. If the embedding service was down for
-part of the run, fill the gaps afterwards with `uv run litgraph backfill-embeddings`.
-
-### 5. Extract entities and pathways
-
-```bash
-uv run python scripts/pubtator_mentions.py --limit 500   # Gene/Compound/Organism + MENTIONS
-uv run python scripts/go_pathways.py                     # 24,129 GO biological_process Pathway nodes
-```
-
-`pubtator_mentions.py` is incremental — re-run until it reports nothing to do. Use a
-small `--limit` on the first run against a shared box.
-
-**`scripts/reactome_pathways.py` is human-only.** Reactome's current release covers 16
-species and no plants at all, so running it against a plant corpus writes *human*
-pathways and `PARTICIPATES_IN`/`PRODUCES` edges into that graph. Skip it for any
-non-human corpus. See "Pathway edges for non-human corpora" below.
-
-### 6. Bootstrap the stats counters
-
-`stats overview` reads cached counters on a `GraphStats` node, which no ingestion job
-populates from scratch:
-
-```bash
-uv run litgraph stats rebuild
-uv run litgraph stats overview
-```
-
-### Optional: citation enrichment
-
-Source-agnostic, so it works on any corpus, but it creates a stub `Paper` per cited work
-outside the set — on `lg2` that inflated 29K real papers to 4.27M vertices. Weigh that
-before running it on a shared server:
-
-```bash
-uv run litgraph enrich --limit 500
-```
-
-### Pathway edges for non-human corpora
-
-Reactome is only relevant to human bio. To connect genes to `Pathway` nodes for a
-non-human species, use GO's own annotation file (GAF) for that species instead:
-
-```bash
-uv run python scripts/go_pathways.py           # must run first — the edge upsert MATCHes Pathway
-uv run python scripts/gaf_participates_in.py   # defaults to rice (ORYSJ / Oryza_sativa)
-```
-
-For another species, pass both the UniProt mnemonic that names the GAF and the NCBI
-`gene_info` stem for the same organism — they use different naming schemes:
-
-```bash
-uv run python scripts/gaf_participates_in.py --species-code ARATH --organism Arabidopsis_thaliana
-```
-
-Both inputs download on first run, no license or API key needed. Measured on rice:
-
-| Stage | Rows |
-|---|---|
-| `biological_process` annotations in `ORYSJ-uniprot.gaf.gz` | 37,803 |
-| dropped: `NOT`-qualified (negative annotations) | 22 |
-| dropped: gene not resolvable to an `ncbigene:` key | 4,885 (12.9%) |
-| collapsed: duplicate (gene, pathway) pairs, best evidence code kept | 6,015 |
-| **`PARTICIPATES_IN` edges written** | **26,881** |
-| `Gene` nodes created on demand by those edges | 13,603 |
-
-The 12.9% drop rate beats the 33.7% ChEBI→MeSH loss the Reactome `PRODUCES` path already
-accepts. What makes it land is GAF column 3 carrying the RAP-DB locus id
-(`Os01g0104100`), plus `build_gene_identifier_crosswalk` indexing gene_info's
-`Symbol`/`Synonyms` alongside `LocusTag` (68.3% → 83.6% of gene products resolvable);
-ambiguous synonyms like `psbA` are dropped rather than resolved to an arbitrary gene.
-
-**This builds the reference layer, not a literature bridge.** The edges connect
-`Gene`→`Pathway`, but `Paper`→`Gene` still comes from PubTator3, whose gene NER barely
-fires on plant text — see the caveat below. There is no `PRODUCES` equivalent for
-non-human corpora, since that path is Reactome-only.
-
-### PubTator3 gene tagging is unusable on plant literature
-
-Measured over the **full 51,166-paper rice corpus**: 3,826 distinct genes, i.e. 0.075
-genes/paper, against `lg2`'s 0.72 — a ~10× collapse. (That rate was identical at the
-600-paper sample, so it is stable, not a small-sample artifact.) The very first 100 papers
-yielded exactly 1 gene, and it was `ncbigene:6654`, *human* SOS1 (a Ras GEF) — almost
-certainly a misnormalization of rice SOS1 (Salt Overly Sensitive 1, an unrelated Na⁺/H⁺
-antiporter). So the gene layer isn't merely sparse; its hits skew to the wrong species.
-
-Compound and organism tagging are genuinely good, and scale well: 5,418 compounds and
-5,058 organisms across 206,162 `MENTIONS` edges (~4 per paper). Top organism is taxon 4530
-(*Oryza sativa*), with *Magnaporthe oryzae* (rice blast) behind it; top compounds are
-Starch, Carbon, Nitrogen, Cadmium, Iron, Arsenic — all correct for rice.
-
-The consequence shows up in the join. Of the 3,826 mentioned genes, only **107 (2.8%)**
-also carry a `PARTICIPATES_IN` edge, so `Paper -MENTIONS-> Gene -PARTICIPATES_IN-> Pathway`
-reaches barely a hundred genes despite all 26,881 GAF edges being loaded.
-
-**Don't try to fix this by expanding the GAF side — it is already saturated.** Partitioning
-the mentioned genes against NCBI's rice `gene_info` shows where the loss actually is:
-
-| | Genes |
-|---|---|
-| mentioned in rice papers by PubTator3 | 3,826 |
-| ...that are rice genes at all | **188 (4.9%)** |
-| ...that are some other species | 3,638 (95.1%) |
-| of those 188 rice genes: already bridged | 107 |
-| of those 188 rice genes: no pathway edge yet | 81 |
-
-So perfect GAF coverage would lift the bridge from 107 to at most **188** genes. The GAF
-side is meanwhile in good shape: 13,602 genes carry pathway edges and **all 13,602 are
-genuinely rice genes** (no cross-species contamination), covering 34% of the 39,965 rice
-genes NCBI knows about. Re-running the loader writes nothing — it is MERGE-based and
-already complete — and `ORYSJ-uniprot.gaf.gz` is the only rice GAF that GO publishes (no
-Indica, no `-mod` variant).
-
-The bottleneck is entirely on the extraction side: 95% of PubTator's gene hits on rice
-literature belong to other organisms and cannot join to rice pathways at all. Only
-plant-aware gene extraction (the LLM pass `plant_schema.md` proposed) moves that number —
-it needs to recognise rice locus ids (`Os01g0104100`, `LOC_Os01g01010`) and community gene
-names (`OsWRKY45`, `SUB1A`, `Xa21`), which is exactly what PubTator does not do.
-
-Worth noting the reverse gap too: 13,495 of the 13,602 pathway-linked rice genes are never
-mentioned by any of the 51,166 papers. The reference layer is far richer than the
-literature layer can currently reach.
-
-Note every bridging gene has a null `name`: by construction they are GAF-created nodes
-(which carry no symbol) that PubTator later mentioned, and `upsert_mentions` only INSERTs
-missing nodes, so a later `MENTIONS` edge never backfills the symbol. Cosmetic, but
-`upsert.py`'s docstring claims MENTIONS "will fill it in later", which it does not.
-
-### Don't run write jobs concurrently on a shared box
-
-`scripts/pubtator_mentions.py` returned a 500 from ArcadeDB while a
-`backload-pubmed-api` run was writing `Paper` vertices to the same database. Its
-`MENTIONS` upsert SELECTs `Paper` by key, so it contends with an active backload. The
-server and `lg2` were unaffected (`/api/v1/ready` 204 throughout), but sequence these
-jobs rather than overlapping them.
 
 ## Data Ingestion
 
@@ -303,8 +104,6 @@ uv run litgraph backload-pubmed-api \
 Add `--limit <N>` to cap the number of records fetched in a single run.
 
 #### 2. Backload the Kaggle arXiv dataset
-
-Run under `tmux` since the full backload + enrichment cycle is long-running:
 
 ```bash
 tmux new -s arxiv-ingest
@@ -457,6 +256,165 @@ Same rule as above — the pod id is an access identifier, so keep it out of the
 #     IdentityFile ~/.ssh/<key>
 ssh runpod-embed
 ```
+
+## Creating a new database
+
+To create a new database, give it a 
+name via `ARCADEDB_DATABASE` as an environment variable. **Do not edit `.env`** as daily cron jobs on AWS read from it. 
+
+```bash
+export ARCADEDB_DATABASE=rice
+export RUN_LOG_PATH=logs/rice_ingestion_runs.jsonl   # else `litgraph runs` mixes corpora
+```
+
+### 1. Create the database and core schema
+
+```bash
+uv run litgraph init-db
+```
+
+Idempotent. Creates the database if absent, then `Paper`/`Author`/`Category`/`GraphStats`
+plus the unique, range, full-text, and vector indexes.
+
+### 2. Add the biology schema
+
+```bash
+uv run python -c "from spokebio.schema_ext import ensure_schema; ensure_schema()"
+```
+
+Adds `Organism`/`Gene`/`Compound`/`Pathway`/`Trait`/`PubtatorChecked` and the
+`MENTIONS`/`PARTICIPATES_IN`/`PRODUCES`/`ASSOCIATED_WITH` edge types.
+
+Verify both steps landed:
+
+```bash
+curl -s -u root:$ARCADEDB_PASSWORD $ARCADEDB_HTTP_URL/api/v1/databases
+curl -s -u root:$ARCADEDB_PASSWORD -X POST $ARCADEDB_HTTP_URL/api/v1/query/$ARCADEDB_DATABASE \
+  -H 'Content-Type: application/json' -d '{"language":"sql","command":"select from schema:types"}'
+```
+
+Expect 9 vertex types and 6 edge types.
+
+### 3. Pick the PubMed query, and verify its hit count first
+
+Check the query returns what you expect *before* ingesting — a wrong MeSH heading fails
+silently with zero results:
+
+```bash
+curl -s -G "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi" \
+  --data-urlencode "db=pubmed" --data-urlencode "retmode=json" \
+  --data-urlencode "email=$NCBI_EMAIL" --data-urlencode 'term="Oryza"[Mesh]'
+```
+
+### 4. Backload the corpus
+
+```bash
+for i in $(seq 1 12); do
+  out=$(uv run litgraph backload-pubmed-api --mesh-terms '"Oryza"[Mesh]' --limit 5000 --batch-size 200)
+  echo "$out"
+  echo "$out" | grep -q "Backloaded 0 PubMed" && break
+done
+```
+
+Embeddings are written inline during backload. If the embedding service was down for
+part of the run, fill the gaps afterwards with `uv run litgraph backfill-embeddings`.
+
+### 5. Extract entities and pathways
+
+```bash
+uv run python scripts/pubtator_mentions.py --limit 500   # Gene/Compound/Organism + MENTIONS
+uv run python scripts/go_pathways.py                     # 24,129 GO biological_process Pathway nodes
+```
+
+### 6. Bootstrap the stats counters
+
+`stats overview` reads cached counters on a `GraphStats` node, which no ingestion job
+populates from scratch:
+
+```bash
+uv run litgraph stats rebuild
+uv run litgraph stats overview
+```
+
+### Optional: citation enrichment
+
+Source-agnostic, so it works on any corpus, but it creates a stub `Paper` per cited work
+outside the set — on `lg2` that inflated 29K real papers to 4.27M vertices. Weigh that
+before running it on a shared server:
+
+```bash
+uv run litgraph enrich --limit 500
+```
+
+### Pathway edges for non-human corpora
+
+To connect genes to `Pathway` nodes for a
+non-human species, use GO's own annotation file (GAF) for that species:
+
+```bash
+uv run python scripts/go_pathways.py           # must run first — the edge upsert MATCHes Pathway
+uv run python scripts/gaf_participates_in.py   # defaults to rice (ORYSJ / Oryza_sativa)
+```
+
+For another species, pass both the UniProt mnemonic that names the GAF and the NCBI
+`gene_info` stem for the same organism — they use different naming schemes:
+
+```bash
+uv run python scripts/gaf_participates_in.py --species-code ARATH --organism Arabidopsis_thaliana
+```
+
+**This builds the reference layer, not a literature bridge.** The edges connect
+`Gene`→`Pathway`, but `Paper`→`Gene` still comes from PubTator3, whose gene NER barely
+fires on plant text. There is no `PRODUCES` equivalent for
+non-human corpora, since that path is Reactome-only.
+
+### Trait edges for rice (trait-centric queries)
+
+Loads the Trait Ontology as `Trait` nodes, then Oryzabase's curated rice gene-trait
+annotations as `Gene`→`Trait` `ASSOCIATED_WITH` edges. Run in this order — the edge
+upsert MATCHes `Trait` nodes rather than creating them, so without step 1 step 2 writes
+nothing:
+
+```bash
+uv run python scripts/to_traits.py          # 1,587 non-obsolete TO terms -> Trait nodes
+uv run python scripts/oryzabase_traits.py   # ~33.5K Gene -> Trait edges (rice only)
+```
+
+Both are MERGE-based and safe to re-run. Re-run after a new TO release, or when
+Oryzabase refreshes its export.
+
+Rice-specific by construction: Oryzabase is a rice database and gene resolution depends
+on NCBI's `Oryza_sativa` gene_info file, so there's no `--species-code` switch the way
+`gaf_participates_in.py` has one.
+
+Expected drops on a clean run, none of them errors:
+
+| Drop | Count | Why |
+|---|---|---|
+| Gene unresolvable | ~1,558 of 8,503 rows (18%) | Bracketed classical mutants (`[CMS-54257]`) with no locus id and no molecular identity |
+| Obsolete TO term | ~646 edges (1.9%) | Oryzabase annotates against TO ids that TO has since obsoleted; reported, not silent |
+| Duplicate pair | ~114 | Same gene-trait pair on multiple rows |
+
+Two parsing gotchas, both handled in `ingest/oryzabase.py` but worth knowing if you touch
+it: the export declares `charset=Windows-31J` but the bytes are **UTF-8 with a BOM**
+(honouring the declared charset raises `UnicodeDecodeError` partway through), and rice
+RAP-DB ids live in gene_info's **`Other_designations`** column, not `LocusTag` — which is
+why this path uses `build_locus_identifier_crosswalk` rather than the GAF path's
+`build_gene_identifier_crosswalk` (20.2% vs 81.7% resolution).
+
+Trait-centric query this enables — the gene is the hub, so `Trait` and `Pathway` both
+hang off it:
+
+```sql
+MATCH (p:Paper)-[:MENTIONS]->(g:Gene)-[:ASSOCIATED_WITH]->(t:Trait {name:'drought tolerance'})
+MATCH (g)-[:PARTICIPATES_IN]->(w:Pathway)
+RETURN t.name, g.name, w.name, count(DISTINCT p) AS papers
+ORDER BY papers DESC
+```
+
+The `Paper`→`Gene` hop is still the bottleneck (PubTator finds a rice gene in only 7.4%
+of papers); the reference layer below it is dense (4,710 genes carry both a trait and a
+pathway edge).
 
 ## Troubleshooting
 
