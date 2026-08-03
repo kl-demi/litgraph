@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-# NCBI publishes one flat file per organism under this directory -- free, no license/API
+# NCBI publishes one file per organism under this directory -- free, no license/API
 # key needed. Confirmed live (2026-07-24): file is named "<Genus>_<species>.gene_info.gz",
 # e.g. "Arabidopsis_thaliana.gene_info.gz" (1.4MB, 38,313 rows).
 GENE_INFO_BASE_URL = "https://ftp.ncbi.nlm.nih.gov/gene/DATA/GENE_INFO/Plants"
@@ -58,12 +58,12 @@ def iter_gene_info_rows(path: str | Path) -> Iterator[dict]:
 
 
 def build_locus_tag_crosswalk(path: str | Path) -> dict[str, str]:
-    """Build a LocusTag -> namespaced NCBI Gene ID map (e.g. "AT1G32640" ->
-    "ncbigene:840158"), matching the existing Gene.gene_id namespacing (see
-    ingest/pubtator.py) -- the lookup a future GAF/PGDB ingestion needs to resolve a
-    TAIR-style gene reference back to the Gene node PubTator3 already wrote, instead of
-    minting a duplicate keyed by locus tag. Rows with no LocusTag (some gene_info rows
-    use "-" for missing fields) are skipped -- nothing to cross-walk for those.
+    """Build a LocusTag -> NCBI Gene ID map (e.g. "AT1G32640" -> "ncbigene:840158"), 
+    matching the existing Gene.gene_id namespacing.
+    
+    This allows future GAF/PGDB ingestions to resolve a TAIR-style gene reference 
+    back to the Gene node PubTator3 already wrote, instead of minting a duplicate 
+    keyed by locus tag. Rows with no LocusTag are skipped.
     """
     crosswalk: dict[str, str] = {}
     for row in iter_gene_info_rows(path):
@@ -82,14 +82,12 @@ _PLACEHOLDER_SYMBOLS = frozenset({"NEWENTRY"})
 
 def build_gene_identifier_crosswalk(path: str | Path) -> dict[str, str]:
     """Like ``build_locus_tag_crosswalk``, but also indexes each gene's Symbol and
-    Synonyms -- which raises the share of a GAF's gene references that resolve (measured
-    on rice: 68.3% -> 83.6%), since a GAF doesn't consistently use the locus tag.
+    Synonyms to resolve more GAF's gene references, since a GAF doesn't 
+    consistently use the locus tag.
 
-    LocusTag wins on collision (it is the authoritative locus identifier; confirmed on
-    rice that no LocusTag is another gene's symbol/synonym). Symbols/synonyms that are
-    ambiguous across genes are dropped rather than resolved arbitrarily -- on rice that's
-    1.03% of tokens, including chloroplast genes like ``psbA`` present in several
-    assemblies, where guessing would attach the edge to the wrong Gene node.
+    LocusTag is the authoritative locus identifier (confirmed on rice that no 
+    LocusTag is another gene's symbol/synonym). Symbols/synonyms that are
+    ambiguous across genes are dropped -- on rice that's 1.03% of tokens.
     """
     locus_tags = build_locus_tag_crosswalk(path)
 
