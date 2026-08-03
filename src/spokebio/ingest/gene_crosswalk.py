@@ -1,4 +1,5 @@
 import gzip
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -111,4 +112,64 @@ def build_gene_identifier_crosswalk(path: str | Path) -> dict[str, str]:
         if len(gene_ids) == 1 and token not in locus_tags
     }
     crosswalk.update(locus_tags)
+    return crosswalk
+
+
+# Rice's community identifiers: RAP-DB ("Os01g0194300") and MSU/TIGR ("LOC_Os01g05060").
+_RAP_ID = re.compile(r"Os\d{2}g\d{7}")
+_MSU_ID = re.compile(r"LOC_Os\d{2}g\d{5}")
+
+# Columns build_gene_identifier_crosswalk indexes, plus Other_designations. The addition
+# matters more than it looks: NCBI files the RAP-DB locus id under Other_designations
+# (22,408 of the 23,735 in rice's gene_info), *not* LocusTag -- rice LocusTags are
+# assembly-scoped tags like "OsJ_01234"/"AKK66_gp001" instead. Indexing only
+# LocusTag/Symbol/Synonyms resolves 20.2% of Oryzabase's trait-annotated genes; adding
+# this column takes it to 81.5%.
+_IDENTIFIER_COLUMNS = ("LocusTag", "Symbol", "Symbol_from_nomenclature_authority", "Synonyms", "Other_designations")
+
+
+def build_locus_identifier_crosswalk(path: str | Path) -> dict[str, str]:
+    """Build a case-insensitive identifier -> ``ncbigene:<id>`` map covering every
+    identifier column in a gene_info file, including Other_designations, plus normalized
+    RAP/MSU forms found anywhere in the row.
+
+    Separate from ``build_gene_identifier_crosswalk`` rather than replacing it: that one
+    backs the live GAF ingestion (``pipeline.run_gaf_ingest``), and broadening its keys
+    would change which Gene nodes existing PARTICIPATES_IN edges resolve onto. Use this
+    for sources that identify genes by community locus id -- see ingest/oryzabase.py.
+
+    Keys are uppercased, so callers must uppercase their lookups. First writer wins per
+    key, and LocusTag/Symbol are indexed first, so an authoritative identifier is never
+    displaced by a synonym that happens to collide with it.
+    """
+    crosswalk: dict[str, str] = {}
+
+    def add(token: str, gene_id: str) -> None:
+        token = token.strip()
+        if token and token != "-" and token not in _PLACEHOLDER_SYMBOLS:
+            crosswalk.setdefault(token.upper(), f"ncbigene:{gene_id}")
+
+    for row in iter_gene_info_rows(path):
+        gene_id = row.get("GeneID")
+        if not gene_id:
+            continue
+        for column in _IDENTIFIER_COLUMNS:
+            value = row.get(column) or "-"
+            if value == "-":
+                continue
+            # Other_designations and Synonyms are pipe-separated lists; the single-value
+            # columns split to a one-element list harmlessly.
+            for token in value.split("|"):
+                add(token, gene_id)
+        # A RAP/MSU id can be embedded in a longer designation ("uncharacterized protein
+        # LOC4323834|Os01g0969000" splits cleanly, but "B3 domain-containing protein
+        # Os01g0234100-like" does not), so also index the bare matches. MSU ids are
+        # indexed with and without the LOC_ prefix, since sources use both spellings.
+        joined = "\t".join(row.values())
+        for match in _RAP_ID.findall(joined):
+            add(match, gene_id)
+        for match in _MSU_ID.findall(joined):
+            add(match, gene_id)
+            add(match.removeprefix("LOC_"), gene_id)
+
     return crosswalk

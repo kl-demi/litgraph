@@ -3,7 +3,7 @@ from datetime import datetime
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
-from spokebio.models import EntityMention, ParticipatesIn, Pathway, Produces
+from spokebio.models import AssociatedWith, EntityMention, ParticipatesIn, Pathway, Produces, Trait
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
 _STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
@@ -133,6 +133,56 @@ def upsert_pathways(pathways: list[Pathway]) -> int:
         return 0
     params = [{"pathway_id": p.pathway_id, "name": p.name, "source_db": p.source_db} for p in pathways]
     return run_write(_UPSERT_PATHWAYS, pathways=params)[0]["new_pathways"]
+
+
+# Same shape and same reasoning as _UPSERT_PATHWAYS -- Trait nodes never touch Paper.
+_UPSERT_TRAITS = """
+UNWIND $traits AS t
+MERGE (tr:Trait {trait_id: t.trait_id})
+ON CREATE SET tr._is_new = true
+WITH tr, t, coalesce(tr._is_new, false) AS is_new
+REMOVE tr._is_new
+SET tr.name = t.name, tr.source_db = t.source_db
+RETURN count(CASE WHEN is_new THEN 1 END) AS new_traits
+"""
+
+
+def upsert_traits(traits: list[Trait]) -> int:
+    """Upsert a batch of Trait nodes (from the Trait Ontology). Returns the count of
+    newly created nodes."""
+    if not traits:
+        return 0
+    params = [{"trait_id": t.trait_id, "name": t.name, "source_db": t.source_db} for t in traits]
+    return run_write(_UPSERT_TRAITS, traits=params)[0]["new_traits"]
+
+
+# MATCHes the Trait rather than MERGEing it, unlike _UPSERT_PARTICIPATES_IN's treatment
+# of Pathway: a TO id absent from the graph means trait_ontology.py hasn't run (or the
+# id is obsolete/imported and was filtered out), and MERGEing would create a nameless
+# Trait node that silently launders that mistake into the graph. The Gene *is* MERGEd,
+# for the same reason PARTICIPATES_IN does it -- most trait-annotated rice genes have no
+# node yet, since MENTIONS only creates one when literature happens to name it.
+_UPSERT_ASSOCIATED_WITH = """
+UNWIND $edges AS e
+MERGE (g:Gene {gene_id: e.gene_id})
+WITH g, e
+MATCH (tr:Trait {trait_id: e.trait_id})
+MERGE (g)-[edge:ASSOCIATED_WITH]->(tr)
+ON CREATE SET edge._is_new = true
+SET edge.source_db = e.source_db
+WITH edge, coalesce(edge._is_new, false) AS is_new
+REMOVE edge._is_new
+RETURN count(CASE WHEN is_new THEN 1 END) AS new_edges
+"""
+
+
+def upsert_associated_with(edges: list[AssociatedWith]) -> int:
+    """Upsert ASSOCIATED_WITH edges (Gene -> Trait, currently from Oryzabase). Returns
+    the count of newly created edges."""
+    if not edges:
+        return 0
+    params = [{"gene_id": e.gene_id, "trait_id": e.trait_id, "source_db": e.source_db} for e in edges]
+    return run_write(_UPSERT_ASSOCIATED_WITH, edges=params)[0]["new_edges"]
 
 
 # Plain Cypher/Bolt MERGE -- never touches Paper, so no vector-index-bug risk (same

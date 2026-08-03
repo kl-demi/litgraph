@@ -1,8 +1,8 @@
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 
-_VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway"]
-_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN", "PRODUCES"]
+_VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway", "Trait"]
+_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN", "PRODUCES", "ASSOCIATED_WITH"]
 
 # (vertex_type, key_property) -- Compound's key is named compound_id rather than
 # chebi_id: see ingest/pubtator.py's module docstring for why. PubtatorChecked is a
@@ -19,6 +19,9 @@ _UNIQUE_KEYS = [
     ("Compound", "compound_id"),
     ("PubtatorChecked", "paper_id"),
     ("Pathway", "pathway_id"),
+    # Trait Ontology terms (source_db="TO"), keyed on TO's native id verbatim -- same
+    # no-synthetic-prefix rule as Pathway, see docs/spoke_schema.md.
+    ("Trait", "trait_id"),
 ]
 
 
@@ -39,6 +42,7 @@ def ensure_schema() -> None:
     for vertex_type, key_prop in _UNIQUE_KEYS:
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
         arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) UNIQUE")
-    for vertex_type in ("Organism", "Gene", "Compound", "Pathway"):
+    for vertex_type in ("Organism", "Gene", "Compound", "Pathway", "Trait"):
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.name STRING")
     arcadedb_http.ensure_ddl("CREATE PROPERTY Pathway.source_db STRING")
+    arcadedb_http.ensure_ddl("CREATE PROPERTY Trait.source_db STRING")

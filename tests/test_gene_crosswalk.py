@@ -1,6 +1,12 @@
 import gzip
 
-from spokebio.ingest.gene_crosswalk import build_locus_tag_crosswalk, ensure_gene_info_file, iter_gene_info_rows
+from spokebio.ingest.gene_crosswalk import (
+    build_gene_identifier_crosswalk,
+    build_locus_identifier_crosswalk,
+    build_locus_tag_crosswalk,
+    ensure_gene_info_file,
+    iter_gene_info_rows,
+)
 
 _HEADER = "#tax_id\tGeneID\tSymbol\tLocusTag\tSynonyms\tdbXrefs\tchromosome\tmap_location\tdescription\ttype_of_gene\tSymbol_from_nomenclature_authority\tFull_name_from_nomenclature_authority\tNomenclature_status\tOther_designations\tModification_date\tFeature_type"
 _MYC2_ROW = "3702\t840158\tMYC2\tAT1G32640\tATMYC2|F6N18.4|JAI1|JIN1\tAraport:AT1G32640|TAIR:AT1G32640\t1\t-\tBasic helix-loop-helix (bHLH) DNA-binding family protein\tprotein-coding\tMYC2\tBasic helix-loop-helix (bHLH) DNA-binding family protein\tO\t-\t20260706\t-"
@@ -91,3 +97,80 @@ def test_ensure_gene_info_file_downloads_when_missing(tmp_path, mocker):
 
     assert result == str(organism_dir / "Arabidopsis_thaliana.gene_info.gz")
     assert (organism_dir / "Arabidopsis_thaliana.gene_info.gz").read_text() == _FIXTURE
+
+
+# Rice rows, unlike the Arabidopsis fixture above: the RAP-DB locus id is filed under
+# Other_designations, and LocusTag holds an assembly-scoped tag instead. This is what
+# build_locus_identifier_crosswalk exists to handle.
+_RICE_HEADER = _HEADER
+_RICE_RAP_IN_OTHER_DESIGNATIONS = "39947\t4352133\tBPH9\tOsJ_36543\t-\t-\t12\t-\tresistance protein\tprotein-coding\t-\t-\t-\tuncharacterized protein LOC4352133|Os12g0559400\t20260706\t-"
+_RICE_MSU_ROW = "39947\t4336000\tSOMEGENE\tOsJ_15001\t-\t-\t4\t-\tsome protein\tprotein-coding\t-\t-\t-\thypothetical protein LOC_Os04g35210\t20260706\t-"
+# A RAP id embedded in a longer designation rather than pipe-delimited on its own.
+_RICE_EMBEDDED_RAP = "39947\t4324283\tB3GENE\tOsJ_00123\t-\t-\t1\t-\tB3 domain protein\tprotein-coding\t-\t-\t-\tB3 domain-containing protein Os01g0234100-like\t20260706\t-"
+
+_NEWENTRY_ROW = "39947\t3974662\tNEWENTRY\t-\t-\t-\t-\t-\t-\tother\t-\t-\t-\t-\t20260706\t-"
+
+_RICE_FIXTURE = "\n".join([_RICE_HEADER, _RICE_RAP_IN_OTHER_DESIGNATIONS, _RICE_MSU_ROW, _RICE_EMBEDDED_RAP]) + "\n"
+
+
+def test_build_locus_identifier_crosswalk_indexes_other_designations(tmp_path):
+    """The column that carries rice RAP ids. build_gene_identifier_crosswalk doesn't read
+    it, which is why Oryzabase resolution sat at 20.2% instead of 81.5%."""
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text(_RICE_FIXTURE)
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_file)
+
+    assert crosswalk["OS12G0559400"] == "ncbigene:4352133"
+
+
+def test_build_locus_identifier_crosswalk_indexes_msu_with_and_without_loc_prefix(tmp_path):
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text(_RICE_FIXTURE)
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_file)
+
+    assert crosswalk["LOC_OS04G35210"] == "ncbigene:4336000"
+    assert crosswalk["OS04G35210"] == "ncbigene:4336000"
+
+
+def test_build_locus_identifier_crosswalk_finds_rap_id_embedded_in_a_designation(tmp_path):
+    """"B3 domain-containing protein Os01g0234100-like" doesn't split cleanly on the pipe
+    delimiter, so the bare id has to be matched by pattern."""
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text(_RICE_FIXTURE)
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_file)
+
+    assert crosswalk["OS01G0234100"] == "ncbigene:4324283"
+
+
+def test_build_locus_identifier_crosswalk_keys_are_uppercased(tmp_path):
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text(_RICE_FIXTURE)
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_file)
+
+    assert all(k == k.upper() for k in crosswalk)
+    assert "Os12g0559400" not in crosswalk
+
+
+def test_build_locus_identifier_crosswalk_skips_placeholder_symbols(tmp_path):
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text("\n".join([_RICE_HEADER, _NEWENTRY_ROW]) + "\n")
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_file)
+
+    assert "NEWENTRY" not in crosswalk
+
+
+def test_build_gene_identifier_crosswalk_unchanged_by_the_new_builder(tmp_path):
+    """The GAF path still depends on the narrower builder; broadening its keys would
+    change which Gene nodes existing PARTICIPATES_IN edges resolve onto."""
+    gene_info_file = tmp_path / "rice.gene_info"
+    gene_info_file.write_text(_RICE_FIXTURE)
+
+    narrow = build_gene_identifier_crosswalk(gene_info_file)
+
+    assert "OS12G0559400" not in narrow
+    assert narrow["OsJ_36543"] == "ncbigene:4352133"
