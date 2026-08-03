@@ -29,7 +29,15 @@ RETURN $newCount;
 
 # SELECTs both the Paper and the entity by natural key to get their @rids,
 # checks for existing MENTIONS edge and CREATE EDGE if none exists.
-def _upsert_mentions_sql(vertex_type: str, key_prop: str) -> str:
+#
+# `source` stamps which extractor produced the edge (e.g. "pubtator3", "oryzabase-gazetteer")
+# so the two can be told apart, measured against each other, and one of them reverted
+# without touching the other. Omitted -> no property is set, which is exactly the old
+# behaviour; the ~206K MENTIONS edges written before this existed carry no `source` and are
+# all PubTator3's. An existing edge is never re-stamped, so whichever extractor found a
+# mention first keeps the attribution.
+def _upsert_mentions_sql(vertex_type: str, key_prop: str, source: str | None = None) -> str:
+    set_source = f" SET source = '{source}'" if source else ""
     return f"""
 BEGIN;
 LET mentions = :mentions;
@@ -42,7 +50,7 @@ FOREACH ($m IN $mentions) {{
     LET entityRid = $entityRows[0].@rid;
     LET existingEdges = SELECT FROM MENTIONS WHERE @out = $paperRid AND @in = $entityRid;
     IF ($existingEdges.size() = 0) {{
-      CREATE EDGE MENTIONS FROM $paperRid TO $entityRid;
+      CREATE EDGE MENTIONS FROM $paperRid TO $entityRid{set_source};
       LET newCount = $newCount + 1;
     }}
   }}
@@ -71,11 +79,12 @@ RETURN count(CASE WHEN is_new THEN 1 END) AS new_pathways
 """
 
 
-def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str, int]:
+def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str | None = None) -> dict[str, int]:
     """Upsert Gene/Compound/Organism nodes and MENTIONS edges for a batch of papers.
 
-    ``paper_mentions`` maps litgraph Paper.id -> the mentions PubTator3 found for it
-    (an empty list means no edges). Returns counts of newly created nodes/edges.
+    ``paper_mentions`` maps litgraph Paper.id -> the mentions found for it (an empty list
+    means no edges). ``source`` optionally stamps new edges with the extractor that produced
+    them -- see _upsert_mentions_sql. Returns counts of newly created nodes/edges.
     """
     settings = get_settings()
     if settings.graph_backend != "arcadedb":
@@ -108,9 +117,9 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]]) -> dict[str,
         edges = edge_rows_by_type[vertex_type]
         if edges:
             edge_params = [{"paper_id": p, "entity_id": e} for p, e in edges]
-            new_edges = arcadedb_http.run_script(_upsert_mentions_sql(vertex_type, key_prop), mentions=edge_params)[
-                0
-            ]["value"]
+            new_edges = arcadedb_http.run_script(
+                _upsert_mentions_sql(vertex_type, key_prop, source), mentions=edge_params
+            )[0]["value"]
             stats["new_mention_edges"] += new_edges
 
     return stats
@@ -242,3 +251,29 @@ def upsert_produces(edges: list[Produces]) -> int:
         return 0
     params = [{"pathway_id": e.pathway_id, "compound_id": e.compound_id, "evidence_code": e.evidence_code} for e in edges]
     return run_write(_UPSERT_PRODUCES, edges=params)[0]["new_edges"]
+
+
+# Sets `name` only WHERE it is currently null, never overwriting one that exists -- the
+# additive-only discipline docs/plant_schema.md requires for vertices another job may write.
+# Gene carries no vector index (that's Paper), so plain Cypher is safe here.
+_BACKFILL_GENE_NAMES = """
+UNWIND $genes AS g
+MATCH (n:Gene {gene_id: g.gene_id})
+WHERE n.name IS NULL
+SET n.name = g.name
+RETURN count(n) AS named
+"""
+
+
+def backfill_gene_names(names: dict[str, str]) -> int:
+    """Give a readable symbol to Gene nodes that have none.
+
+    Genes bootstrapped by the GAF and Oryzabase loaders are created key-only, because those
+    sources are keyed on locus ids and carry no symbol -- so a trait query returns
+    `gene: null` for most rows even when the graph knows the gene perfectly well. The
+    gazetteer does know the symbol, so this closes the gap. Returns the count named.
+    """
+    if not names:
+        return 0
+    params = [{"gene_id": k, "name": v} for k, v in names.items()]
+    return run_write(_BACKFILL_GENE_NAMES, genes=params)[0]["named"]

@@ -1,8 +1,10 @@
+from collections import Counter
 from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_read
 from spokebio.ingest.chebi_mesh_crosswalk import (
     DEFAULT_MESH_YEAR,
@@ -13,6 +15,7 @@ from spokebio.ingest.chebi_mesh_crosswalk import (
 )
 from spokebio.ingest.gaf import DEFAULT_SPECIES_CODE, ensure_gaf_file
 from spokebio.ingest.gaf import extract_participates_in as extract_gaf_participates_in
+from spokebio.ingest.gene_gazetteer import build_gazetteer, extract_mentions
 from spokebio.ingest.gene_crosswalk import (
     build_gene_identifier_crosswalk,
     build_locus_identifier_crosswalk,
@@ -34,6 +37,7 @@ from spokebio.ingest.reactome import (
 from spokebio.ingest.trait_ontology import DEFAULT_TO_OBO_PATH, ensure_to_obo_file, extract_traits
 from spokebio.models import AssociatedWith, EntityMention, ParticipatesIn, Pathway, Produces, Trait
 from spokebio.upsert import (
+    backfill_gene_names,
     mark_papers_checked,
     upsert_associated_with,
     upsert_mentions,
@@ -438,4 +442,109 @@ def run_oryzabase_ingest(
         f"oryzabase-traits: processed {totals['edges_processed']} gene-trait pairs, "
         f"+{totals['new_associated_with_edges']} new ASSOCIATED_WITH edges"
     )
+    return totals
+
+
+# Pages the whole corpus rather than filtering to unprocessed papers via a bookkeeping
+# node (the PubtatorChecked pattern): the gazetteer makes no network calls, so a full pass
+# costs seconds of local CPU and resumability isn't worth an extra vertex type. Re-runs are
+# idempotent -- upsert_mentions only creates an edge that doesn't already exist.
+_PAGE_PAPERS_FOR_GAZETTEER = """
+SELECT id, title, abstract FROM Paper
+WHERE is_stub = false AND abstract IS NOT NULL
+ORDER BY id SKIP :skip LIMIT :limit
+"""
+
+GAZETTEER_SOURCE = "oryzabase-gazetteer"
+
+
+def run_gazetteer_mentions(
+    oryzabase_path: str | None = None,
+    organism: str = "Oryza_sativa",
+    page_size: int = 2000,
+    batch_size: int = 500,
+    dry_run: bool = False,
+    include_unaudited: bool = False,
+    force_download: bool = False,
+) -> dict[str, int]:
+    """Extract rice gene mentions from paper text with the Oryzabase gazetteer and write
+    them as Paper -> Gene MENTIONS edges, stamped ``source="oryzabase-gazetteer"``.
+
+    Complements rather than replaces PubTator3: it only adds edges that don't already
+    exist, and PubTator keeps the attribution wherever it found the same mention first.
+    See ingest/gene_gazetteer.py for why this is a dictionary and not an LLM, and why only
+    unambiguous surface forms are admitted.
+
+    ``dry_run=True`` reports what would be written and writes nothing -- worth using before
+    any first run against a corpus, since a gazetteer's precision depends entirely on the
+    source vocabulary's overlap with ordinary English.
+    """
+    path = ensure_oryzabase_file(oryzabase_path or DEFAULT_ORYZABASE_PATH, force=force_download)
+    gene_info_path = ensure_gene_info_file(organism, force=force_download)
+    gazetteer = build_gazetteer(
+        path, build_locus_identifier_crosswalk(gene_info_path), include_unaudited=include_unaudited
+    )
+    console.log(
+        f"gazetteer-mentions: {len(gazetteer)} surface forms covering "
+        f"{len(set(gazetteer.values()))} genes "
+        f"({'permissive tier -- includes unaudited forms' if include_unaudited else 'conservative policy'})"
+    )
+
+    totals = {
+        "papers_scanned": 0, "papers_with_mentions": 0, "mentions_found": 0,
+        "new_genes": 0, "new_mention_edges": 0, "genes_named": 0,
+    }
+    form_hits: Counter[str] = Counter()
+    symbols: dict[str, str] = {}
+    skip = 0
+
+    with _progress() as progress:
+        task = progress.add_task("Scanning papers for rice gene mentions", total=None)
+        while True:
+            rows = arcadedb_http.run_query(_PAGE_PAPERS_FOR_GAZETTEER, skip=skip, limit=page_size)
+            if not rows:
+                break
+            batch: dict[str, list[EntityMention]] = {}
+            for row in rows:
+                mentions = extract_mentions(row.get("title"), row.get("abstract"), gazetteer)
+                totals["papers_scanned"] += 1
+                if not mentions:
+                    continue
+                totals["papers_with_mentions"] += 1
+                totals["mentions_found"] += len(mentions)
+                for m in mentions:
+                    form_hits[m.name] += 1
+                    symbols.setdefault(m.entity_id, m.name)
+                batch[row["id"]] = mentions
+                if not dry_run and len(batch) >= batch_size:
+                    stats = upsert_mentions(batch, source=GAZETTEER_SOURCE)
+                    totals["new_genes"] += stats["new_genes"]
+                    totals["new_mention_edges"] += stats["new_mention_edges"]
+                    batch = {}
+            if not dry_run and batch:
+                stats = upsert_mentions(batch, source=GAZETTEER_SOURCE)
+                totals["new_genes"] += stats["new_genes"]
+                totals["new_mention_edges"] += stats["new_mention_edges"]
+            progress.update(task, advance=len(rows))
+            skip += page_size
+
+    scanned = max(totals["papers_scanned"], 1)
+    console.log(
+        f"gazetteer-mentions: scanned {totals['papers_scanned']} papers, "
+        f"{totals['papers_with_mentions']} had >=1 gene mention "
+        f"({totals['papers_with_mentions'] / scanned:.1%}), {totals['mentions_found']} mentions"
+    )
+    # The top forms are the precision tell: a gazetteer fails loudly here (an ordinary
+    # English word at the top) long before it fails subtly anywhere else.
+    console.log(f"gazetteer-mentions: most-matched forms -- {form_hits.most_common(15)}")
+    if not dry_run and symbols:
+        totals["genes_named"] = backfill_gene_names(symbols)
+        console.log(f"gazetteer-mentions: named {totals['genes_named']} previously key-only Gene nodes")
+    if dry_run:
+        console.log("gazetteer-mentions: DRY RUN -- nothing written")
+    else:
+        console.log(
+            f"gazetteer-mentions: +{totals['new_genes']} Gene nodes, "
+            f"+{totals['new_mention_edges']} MENTIONS edges"
+        )
     return totals
