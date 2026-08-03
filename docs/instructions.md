@@ -61,6 +61,10 @@ MATCH (drug:Drug)-[:INHIBITS]->(protein:Protein)
       -[:DYSREGULATED_IN]->(disease:Disease {name:'COVID-19'})
 WHERE drug.approved = true
 RETURN drug.name, protein.name, pathway.name
+
+MATCH (p:Paper)-[:MENTIONS]->(g:Gene)-[:ASSOCIATED_WITH]->(t:Trait {name:'drought tolerance'})
+MATCH (g)-[:PARTICIPATES_IN]->(w:Pathway)
+RETURN t.name, g.name, w.name, count(DISTINCT p) AS papers ORDER BY papers DESC
 ```
 
 
@@ -401,6 +405,56 @@ it: the export declares `charset=Windows-31J` but the bytes are **UTF-8 with a B
 RAP-DB ids live in gene_info's **`Other_designations`** column, not `LocusTag` — which is
 why this path uses `build_locus_identifier_crosswalk` rather than the GAF path's
 `build_gene_identifier_crosswalk` (20.2% vs 81.7% resolution).
+
+### Rice gene mentions from paper text (the Paper->Gene bottleneck)
+
+PubTator3's gene NER barely fires on rice: 7.4% of papers, and only 4.9% of the genes it
+names are rice genes (the rest are human/mouse orthologs, or Arabidopsis). This adds a
+dictionary pass built from Oryzabase's own symbols and synonyms:
+
+```bash
+uv run python scripts/gazetteer_mentions.py --dry-run   # ALWAYS run this first
+uv run python scripts/gazetteer_mentions.py
+```
+
+Additive to PubTator, never a replacement: edges are only created where none exists, and
+new ones are stamped `source="oryzabase-gazetteer"` so the two extractors stay separable
+and either can be reverted alone. (The ~206K MENTIONS edges predating this carry no
+`source` and are all PubTator3's.) Re-running is idempotent, and also backfills a readable
+`name` onto Gene nodes the GAF/Oryzabase loaders created key-only.
+
+**Why `--dry-run` first.** A gazetteer's precision depends entirely on how much its
+vocabulary overlaps ordinary English, and the report's most-matched-forms list is where
+that shows up. Real failures caught this way:
+
+| Form | Genuine rice gene? | What it actually matched |
+|---|---|---|
+| `SALT` | yes | the word "salt" -- 979 hits in a 6,000-paper sample |
+| `ML-1` | yes | the unit "µg **mL-1**" -- 154 hits |
+| `WD40` | no | a protein *domain* |
+| `NPR1`, `BRI1` | yes | usually the *Arabidopsis* gene; rice writes `OsNPR1`/`OsBRI1` |
+
+So only **unambiguous** forms are admitted, and by default only two classes: those safe by
+construction (a RAP/MSU locus id, or an `Os`-prefixed symbol of 5+ chars -- 55% of all
+matches), plus an explicit allowlist of hand-verified rice symbols (`HD3A`, `XA21`,
+`GHD7`, `EHD1`, `RFT1`, `SLR1`, `SUB1`, `DEP1`, `BADH2`, `NAL1`, `IPA1`, ...). `GHD7` and
+`WD40` are structurally identical -- letters plus digits -- so nothing but the biology
+separates them, which is why that list is explicit rather than a rule.
+
+`--include-unaudited` adds a permissive tier (any 4+ char letters+digits symbol, minus
+units and known rejects). It reaches 22.3% of papers instead of 15.2%, but ~36% of its
+matches are forms nobody has verified. It exists to generate candidates for a later LLM
+disambiguation pass, not for routine loading.
+
+Measured on the 51,166-paper corpus:
+
+| | papers with a gene | mentions | distinct rice genes |
+|---|---|---|---|
+| PubTator3 alone | 3,791 (7.4%) | 479 | 188 |
+| **+ gazetteer (default)** | **10,639** | **+16,003** | **7,928** |
+
+Effect on the trait-centric query: papers supporting
+`Paper->Gene->{Trait, Pathway}` went from **104 to 6,498** (530 traits, 1,231 pathways).
 
 Trait-centric query this enables — the gene is the hub, so `Trait` and `Pathway` both
 hang off it:
