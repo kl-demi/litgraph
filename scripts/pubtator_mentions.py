@@ -31,7 +31,8 @@ def main() -> None:
     print(
         f"Processed {totals['papers_processed']} papers: "
         f"+{totals['new_genes']} genes, +{totals['new_compounds']} compounds, "
-        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges."
+        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges, "
+        f"named {totals['genes_named']} previously key-only genes."
     )
 
 

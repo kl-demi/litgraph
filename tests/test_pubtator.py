@@ -106,6 +106,7 @@ def test_fetch_mentions_silently_skips_pmids_pubtator_has_no_doc_for(mocker):
 def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
     mock_run_script = mocker.patch("spokebio.upsert.arcadedb_http.run_script")
     mock_run_script.return_value = [{"value": 1}]
+    mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
 
     paper_mentions = {
         "pmid:111": [
@@ -116,10 +117,38 @@ def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
 
     stats = upsert_mentions(paper_mentions)
 
-    assert stats == {"new_organisms": 1, "new_genes": 1, "new_compounds": 0, "new_mention_edges": 2}
+    assert stats == {
+        "new_organisms": 1,
+        "new_genes": 1,
+        "new_compounds": 0,
+        "new_mention_edges": 2,
+        "genes_named": 0,
+    }
     # 2 entity-upsert calls (Gene, Organism) + 2 edge-upsert calls -- Compound has no
     # mentions this batch, so it's skipped entirely rather than issuing an empty call.
     assert mock_run_script.call_count == 4
+
+
+def test_upsert_mentions_names_genes_the_pathway_loaders_left_bare(mocker):
+    """_upsert_entities_sql writes `name` only on INSERT, so a Gene the GAF or Oryzabase
+    loader created key-only would keep a null name forever even once a paper names it."""
+    mocker.patch("spokebio.upsert.arcadedb_http.run_script", return_value=[{"value": 1}])
+    mock_run_write = mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 1}])
+
+    stats = upsert_mentions(
+        {
+            "pmid:111": [
+                EntityMention(vertex_type="Gene", entity_id="ncbigene:4340185", name="OsWRKY45"),
+                # Organisms/Compounds are only ever created by this path, so they always
+                # arrive named -- the backfill is Gene-only on purpose.
+                EntityMention(vertex_type="Organism", entity_id="4530", name="rice"),
+            ]
+        }
+    )
+
+    assert stats["genes_named"] == 1
+    assert mock_run_write.call_count == 1
+    assert mock_run_write.call_args.kwargs["genes"] == [{"gene_id": "ncbigene:4340185", "name": "OsWRKY45"}]
 
 
 def test_upsert_mentions_noop_on_empty(mocker):

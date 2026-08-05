@@ -101,7 +101,7 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str 
             entities_by_type[m.vertex_type][m.entity_id] = m
             edge_rows_by_type[m.vertex_type].add((paper_id, m.entity_id))
 
-    stats = {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
+    stats = {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0, "genes_named": 0}
 
     for vertex_type, key_prop in _KEY_PROP.items():
         # Upsert entities by types
@@ -112,6 +112,15 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str 
                 0
             ]["value"]
             stats[_STAT_KEY[vertex_type]] = new_count
+
+            # _upsert_entities_sql only writes `name` on INSERT, so a Gene the GAF or
+            # Oryzabase loader created key-only keeps a null name forever even once a
+            # paper names it. Fill those in -- null-only, so nothing already set is
+            # overwritten.
+            if vertex_type == "Gene":
+                stats["genes_named"] += backfill_gene_names(
+                    {e.entity_id: e.name for e in entities if e.name}
+                )
 
         # Once entities are created as nodes, add edges to them
         edges = edge_rows_by_type[vertex_type]

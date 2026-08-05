@@ -173,3 +173,48 @@ def build_locus_identifier_crosswalk(path: str | Path) -> dict[str, str]:
             add(match.removeprefix("LOC_"), gene_id)
 
     return crosswalk
+
+
+# NCBI's placeholder Symbol for a gene with no community symbol: "LOC" + the GeneID
+# itself, e.g. "LOC4338919". Rice is almost entirely this -- 0 of its 39,963 gene_info
+# rows carry a Symbol_from_nomenclature_authority, and only 41 of the genes currently in
+# the graph have a real symbol. Writing it as a display name would be worse than writing
+# nothing: it restates the key, hides which genes genuinely lack a symbol, and blocks a
+# later real symbol from landing (the backfill only fills nulls).
+_LOC_PLACEHOLDER_SYMBOL = re.compile(r"^LOC\d+$")
+_BARE_RAP_ID = re.compile(r"^Os\d{2}g\d{7}$")
+
+
+def build_gene_name_map(path: str | Path) -> dict[str, str]:
+    """Build an ``ncbigene:<id>`` -> display-name map from a gene_info file, for giving
+    key-only Gene nodes something readable.
+
+    Two tiers, best first, and deliberately no third:
+    1. the real ``Symbol``, when NCBI has one;
+    2. otherwise the RAP-DB locus id from ``Other_designations`` -- not a symbol, but the
+       identifier rice researchers actually search on, and far more use than the key.
+
+    Genes whose only offer is NCBI's ``LOC<id>`` placeholder are **left out**, so they stay
+    null and remain fillable by a later extraction pass. On rice that keeps 1,378 of 11,672
+    honestly unnamed rather than cosmetically named.
+
+    Ordering matters operationally: run the extraction-derived passes (PubTator, the
+    Oryzabase gazetteer) before applying this, since ``upsert.backfill_gene_names`` fills
+    only nulls and a locus id here would otherwise pre-empt a real symbol later.
+    """
+    names: dict[str, str] = {}
+    for row in iter_gene_info_rows(path):
+        gene_id = row.get("GeneID")
+        if not gene_id:
+            continue
+        symbol = (row.get("Symbol") or "-").strip()
+        if symbol not in ("-", "") and symbol not in _PLACEHOLDER_SYMBOLS and not _LOC_PLACEHOLDER_SYMBOL.match(symbol):
+            names[f"ncbigene:{gene_id}"] = symbol
+            continue
+        rap_id = next(
+            (t.strip() for t in (row.get("Other_designations") or "").split("|") if _BARE_RAP_ID.match(t.strip())),
+            None,
+        )
+        if rap_id:
+            names[f"ncbigene:{gene_id}"] = rap_id
+    return names

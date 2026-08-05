@@ -79,7 +79,7 @@ def _flush(batch: dict[str, list[EntityMention]], totals: dict[str, int]) -> Non
     stats = upsert_mentions(batch)
     mark_papers_checked(list(batch), datetime.now(UTC))
     totals["papers_processed"] += len(batch)
-    for key in ("new_organisms", "new_genes", "new_compounds", "new_mention_edges"):
+    for key in ("new_organisms", "new_genes", "new_compounds", "new_mention_edges", "genes_named"):
         totals[key] += stats[key]
 
 
@@ -94,7 +94,10 @@ def run_pubtator_mentions(limit: int = 500, requests_per_second: float = 3.0) ->
     ``requests_per_second`` rather than firing batches back-to-back.
     """
     rows = run_read(_FIND_UNCHECKED, limit=limit)
-    totals = {"papers_processed": 0, "new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
+    totals = {
+        "papers_processed": 0, "new_organisms": 0, "new_genes": 0, "new_compounds": 0,
+        "new_mention_edges": 0, "genes_named": 0,
+    }
     if not rows:
         console.log("pubtator-mentions: nothing to do")
         return totals
@@ -128,7 +131,8 @@ def run_pubtator_mentions(limit: int = 500, requests_per_second: float = 3.0) ->
     console.log(
         f"pubtator-mentions: processed {totals['papers_processed']} papers -- "
         f"+{totals['new_genes']} genes, +{totals['new_compounds']} compounds, "
-        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges"
+        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges, "
+        f"named {totals['genes_named']} previously key-only genes"
     )
     return totals
 

@@ -2,6 +2,7 @@ import gzip
 
 from spokebio.ingest.gene_crosswalk import (
     build_gene_identifier_crosswalk,
+    build_gene_name_map,
     build_locus_identifier_crosswalk,
     build_locus_tag_crosswalk,
     ensure_gene_info_file,
@@ -174,3 +175,48 @@ def test_build_gene_identifier_crosswalk_unchanged_by_the_new_builder(tmp_path):
 
     assert "OS12G0559400" not in narrow
     assert narrow["OsJ_36543"] == "ncbigene:4352133"
+
+
+# Rice's actual shape, which differs from Arabidopsis above in the ways that matter here:
+# no Symbol_from_nomenclature_authority at all, Symbol is usually NCBI's "LOC<GeneID>"
+# placeholder, and the RAP-DB locus id lives in Other_designations.
+_RICE_REAL_SYMBOL_ROW = "39947\t4324813\tPHT4;3\t-\t-\t-\t1\t-\tphosphate transporter\tprotein-coding\t-\t-\t-\tOs01g0107400\t20260706\t-"
+_RICE_LOC_PLACEHOLDER_ROW = "39947\t4323840\tLOC4323840\tOsJ_01234\t-\t-\t1\t-\tuncharacterized\tprotein-coding\t-\t-\t-\tuncharacterized protein|Os01g0970700\t20260706\t-"
+_RICE_NOTHING_USABLE_ROW = "39947\t4399999\tLOC4399999\t-\t-\t-\t1\t-\tuncharacterized\tprotein-coding\t-\t-\t-\thypothetical protein\t20260706\t-"
+_RICE_NEWENTRY_ROW = "39947\t4326819\tNEWENTRY\t-\t-\t-\t1\t-\tRecord to support submission\tother\t-\t-\t-\t-\t20260706\t-"
+
+_RICE_NAME_FIXTURE = (
+    "\n".join(
+        [_HEADER, _RICE_REAL_SYMBOL_ROW, _RICE_LOC_PLACEHOLDER_ROW, _RICE_NOTHING_USABLE_ROW, _RICE_NEWENTRY_ROW]
+    )
+    + "\n"
+)
+
+
+def _rice_gene_info(tmp_path):
+    path = tmp_path / "Oryza_sativa.gene_info"
+    path.write_text(_RICE_NAME_FIXTURE)
+    return path
+
+
+def test_gene_name_map_prefers_a_real_symbol(tmp_path):
+    assert build_gene_name_map(_rice_gene_info(tmp_path))["ncbigene:4324813"] == "PHT4;3"
+
+
+def test_gene_name_map_falls_back_to_the_rap_locus_id(tmp_path):
+    """Not a symbol, but the identifier rice researchers search on -- and far more use as a
+    display name than the bare key."""
+    assert build_gene_name_map(_rice_gene_info(tmp_path))["ncbigene:4323840"] == "Os01g0970700"
+
+
+def test_gene_name_map_never_emits_the_loc_placeholder(tmp_path):
+    """NCBI's "LOC<GeneID>" Symbol only restates the key. Writing it would hide which genes
+    genuinely lack a symbol and block a later real one, since the fill is null-only."""
+    names = build_gene_name_map(_rice_gene_info(tmp_path))
+
+    assert "ncbigene:4399999" not in names
+    assert not any(v.startswith("LOC") and v[3:].isdigit() for v in names.values())
+
+
+def test_gene_name_map_skips_newentry_placeholder(tmp_path):
+    assert "ncbigene:4326819" not in build_gene_name_map(_rice_gene_info(tmp_path))

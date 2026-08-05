@@ -330,7 +330,42 @@ uv run python scripts/pubtator_mentions.py --limit 500   # Gene/Compound/Organis
 uv run python scripts/go_pathways.py                     # 24,129 GO biological_process Pathway nodes
 ```
 
-### 6. Bootstrap the stats counters
+### 6. Give key-only genes a readable name
+
+Run **last**, after every extraction pass. The GAF and Oryzabase loaders create `Gene`
+nodes key-only (their sources are keyed on locus ids and carry no symbol), so queries come
+back `gene: null` even though the graph knows the gene:
+
+```bash
+uv run python scripts/backfill_gene_names.py --organism Oryza_sativa
+```
+
+Ordering matters because the fill is null-only (`upsert.backfill_gene_names`): a locus id
+written here would pre-empt a real symbol from a pass that runs afterwards.
+
+What it can offer is worse than it first looks, and the tiering is deliberate. Rice has
+**no** `Symbol_from_nomenclature_authority` at all — 0 of 39,963 gene_info rows — and its
+`Symbol` column is almost entirely NCBI's `LOC<GeneID>` placeholder. Measured against the
+11,672 nameless genes in the rice graph:
+
+| Best available name | Genes |
+|---|---|
+| a real symbol (`rpoB`, `PHT4;3`) | 41 (0.4%) |
+| no symbol, but a RAP-DB locus id (`Os01g0970700`) | 10,253 (87.8%) |
+| only `LOC<GeneID>` | 1,378 (11.8%) |
+
+`build_gene_name_map` emits the first two and **skips the third**. Writing `LOC4338919`
+would restate the key, hide which genes genuinely lack a symbol, and permanently block a
+real symbol from landing later. Result on rice: named 10,294, leaving 1,378 honestly null.
+
+`pubtator_mentions.py` also fills names now, for genes a pathway loader created bare before
+a paper named them — `_upsert_entities_sql` writes `name` on INSERT only, so those stayed
+null forever. Note this is per-run: papers already in `PubtatorChecked` are never
+re-queried, so genes stranded by an earlier run need their `PubtatorChecked` rows deleted
+before a re-run can name them (bookkeeping nodes only — every write on that path is
+insert-if-missing, so re-running is safe).
+
+### 7. Bootstrap the stats counters
 
 `stats overview` reads cached counters on a `GraphStats` node, which no ingestion job
 populates from scratch:
