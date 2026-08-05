@@ -270,3 +270,66 @@ def test_backfill_gene_names_noop_on_empty(mocker):
     mock_run_write = mocker.patch("spokebio.upsert.run_write")
     assert backfill_gene_names({}) == 0
     mock_run_write.assert_not_called()
+
+
+def test_upgrade_gene_names_overwrites_unlike_the_backfill(mocker):
+    """The upgrade path must overwrite -- a gene named by the locus-id fallback on an earlier
+    run would otherwise display Os08g0238500 forever, since backfill_gene_names fills only
+    nulls. The safety guard is the caller's, so this SQL deliberately has no WHERE."""
+    from spokebio.upsert import _UPGRADE_GENE_NAMES, upgrade_gene_names
+
+    mock_run_write = mocker.patch("spokebio.upsert.run_write", return_value=[{"upgraded": 1}])
+
+    assert upgrade_gene_names({"ncbigene:4345025": "DLH7"}) == 1
+    assert "WHERE" not in _UPGRADE_GENE_NAMES
+    assert mock_run_write.call_args.kwargs["genes"] == [{"gene_id": "ncbigene:4345025", "name": "DLH7"}]
+
+
+def test_upgrade_gene_names_noop_on_empty(mocker):
+    from spokebio.upsert import upgrade_gene_names
+
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    assert upgrade_gene_names({}) == 0
+    mock_run_write.assert_not_called()
+
+
+def test_gene_name_backfill_only_upgrades_locus_id_names(mocker):
+    """The load-bearing guard: a curated or extractor-assigned name must never be
+    overwritten, and a locus id must never replace another locus id."""
+    from spokebio import pipeline
+
+    mocker.patch.object(pipeline, "ensure_gene_info_file", return_value="gene_info")
+    mocker.patch.object(pipeline, "ensure_oryzabase_file", return_value="oryzabase")
+    mocker.patch.object(pipeline, "build_locus_identifier_crosswalk", return_value={})
+    mocker.patch.object(
+        pipeline,
+        "build_symbol_map",
+        return_value={"already": "SD1", "locus": "DLH7", "named": "GHD7", "placeholder": "AMY2A"},
+    )
+    mocker.patch.object(
+        pipeline,
+        "build_gene_name_map",
+        return_value={"missing": "Os01g0111100", "locus": "Os08g0238500", "named": "Os07g0261200"},
+    )
+    mocker.patch.object(
+        pipeline,
+        "read_gene_names",
+        return_value={
+            "already": "SD1",
+            "locus": "Os08g0238500",
+            "named": "OsWRKY45",
+            "placeholder": "LOC4342055",
+        },
+    )
+    fill = mocker.patch.object(pipeline, "backfill_gene_names", return_value=1)
+    upgrade = mocker.patch.object(pipeline, "upgrade_gene_names", return_value=1)
+
+    pipeline.run_gene_name_backfill()
+
+    # "missing" has no stored name -> filled.
+    assert fill.call_args.args[0] == {"missing": "Os01g0111100"}
+    # "locus" holds a bare locus id and a curated symbol exists -> upgraded.
+    # "already" holds a curated symbol -> untouched. "named" holds an extractor-assigned
+    # symbol, not a locus id -> untouched despite a symbol being available.
+    # "locus" holds a bare locus id, "placeholder" holds NCBI's LOC<id> -- both provisional.
+    assert upgrade.call_args.args[0] == {"locus": "DLH7", "placeholder": "AMY2A"}

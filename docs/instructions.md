@@ -340,23 +340,55 @@ back `gene: null` even though the graph knows the gene:
 uv run python scripts/backfill_gene_names.py --organism Oryza_sativa
 ```
 
-Ordering matters because the fill is null-only (`upsert.backfill_gene_names`): a locus id
-written here would pre-empt a real symbol from a pass that runs afterwards.
+Safe to re-run and idempotent. Three naming sources, in priority order:
 
-What it can offer is worse than it first looks, and the tiering is deliberate. Rice has
-**no** `Symbol_from_nomenclature_authority` at all — 0 of 39,963 gene_info rows — and its
-`Symbol` column is almost entirely NCBI's `LOC<GeneID>` placeholder. Measured against the
-11,672 nameless genes in the rice graph:
+| Tier | Source | What it gives |
+|---|---|---|
+| 1 | Oryzabase `CGSNL Gene Symbol` | the curated symbol (`SD1`, `GHD7`, `BPH9`) |
+| 2 | gene_info `Symbol` | a real symbol, for rice mostly organellar (`psbA`, `matK`) |
+| 3 | gene_info locus id | RAP-DB (`Os01g0970700`), else MSU/TIGR (`LOC_Os01g73880`) |
+| — | NCBI's `LOC<GeneID>` | **never written** |
 
-| Best available name | Genes |
+**Why Oryzabase outranks NCBI here.** Rice's nomenclature authority is Oryzabase's CGSNL,
+and it does not feed NCBI — `Symbol_from_nomenclature_authority` is empty on all 39,965
+rice gene_info rows, versus 96.9% populated for Arabidopsis (TAIR) and 94.4% for human
+(HGNC), counting protein-coding genes. So NCBI's `Symbol` is `LOC<GeneID>` for 96% of rice
+genes while Oryzabase carries a real symbol on all ~22K of its rows. This is not an
+understudied-organism effect; it is one authority never having been wired into NCBI's
+pipeline.
+
+`LOC<GeneID>` is never written because it restates the key and would hide which genes
+genuinely lack a symbol.
+
+**Both RAP-DB and MSU/TIGR are needed.** 22,459 rice gene_info rows carry a RAP id and
+3,464 an MSU id, but only 419 carry both — they are largely disjoint, so dropping MSU
+strands its genes. Note MSU's `LOC_` prefix is unrelated to NCBI's `LOC<GeneID>`; both
+patterns are anchored (`is_locus_id`) because a `startswith("LOC")` test would discard
+every MSU id.
+
+**It upgrades as well as fills**, which matters because `backfill_gene_names` is null-only:
+a gene named by tier 3 on an earlier run would display a bare `Os08g0238500` forever. So a
+name that is still merely *provisional* — a locus id, or a `LOC<GeneID>` an extractor
+relayed — is replaced once a curated symbol is available. Never a curator- or
+extractor-assigned symbol, and the check runs against what is actually stored
+(`upsert.read_gene_names` → `is_provisional_name` → `upsert.upgrade_gene_names`, the one
+write in this file with no `WHERE` guard).
+
+Result on rice, from 11,672 nameless genes:
+
+| Display name | Genes |
 |---|---|
-| a real symbol (`rpoB`, `PHT4;3`) | 41 (0.4%) |
-| no symbol, but a RAP-DB locus id (`Os01g0970700`) | 10,253 (87.8%) |
-| only `LOC<GeneID>` | 1,378 (11.8%) |
+| real symbol | 12,863 |
+| RAP-DB locus id | 5,875 |
+| MSU/TIGR locus id | 442 |
+| `LOC<GeneID>` (extractor-relayed, no curated symbol exists) | 341 |
+| still null | 57 |
 
-`build_gene_name_map` emits the first two and **skips the third**. Writing `LOC4338919`
-would restate the key, hide which genes genuinely lack a symbol, and permanently block a
-real symbol from landing later. Result on rice: named 10,294, leaving 1,378 honestly null.
+**A caveat on coverage, not naming.** `SD1`, `GHD7` and `SUB1A` — among the most-studied
+rice genes there are — cannot be named because they are not `Gene` nodes at all: their
+RAP ids have no `ncbigene:` mapping in gene_info, so the `ncbigene:`-keyed schema cannot
+represent them. That is a crosswalk-coverage limit, not a naming one, and no naming tier
+fixes it.
 
 `pubtator_mentions.py` also fills names now, for genes a pathway loader created bare before
 a paper named them — `_upsert_entities_sql` writes `name` on INSERT only, so those stayed

@@ -1,4 +1,9 @@
-from spokebio.ingest.oryzabase import ensure_oryzabase_file, extract_associated_with, iter_gene_rows
+from spokebio.ingest.oryzabase import (
+    build_symbol_map,
+    ensure_oryzabase_file,
+    extract_associated_with,
+    iter_gene_rows,
+)
 from spokebio.models import AssociatedWith
 from spokebio.upsert import upsert_associated_with
 
@@ -187,3 +192,36 @@ def test_extract_associated_with_keeps_every_trait_when_check_is_omitted(tmp_pat
 
     assert extraction.dropped_unknown_trait == 0
     assert len(extraction.edges) == 5  # 1 + 3 + 1 across the three resolvable rows
+
+
+def test_build_symbol_map_resolves_curated_symbols(tmp_path):
+    """The naming source rice actually has: CGSNL symbols never reach NCBI's gene_info, so
+    without this the graph shows a bare locus id for genes like GHD7."""
+    symbols = build_symbol_map(_write(tmp_path), _CROSSWALK)
+
+    assert symbols["ncbigene:4352133"] == "BPH9"
+    assert symbols["ncbigene:4342860"] == "GHD7"
+    assert symbols["ncbigene:4336000"] == "SOMEGENE"  # resolved via the MSU-only column
+
+
+def test_build_symbol_map_covers_rows_with_no_trait_annotation(tmp_path):
+    """Unlike extract_associated_with, naming must not require a TO term -- a gene with a
+    curated symbol and no trait still deserves its name."""
+    assert build_symbol_map(_write(tmp_path), {"OS01G0100100": "ncbigene:4400123"}) == {
+        "ncbigene:4400123": "NOTRAIT"
+    }
+
+
+def test_build_symbol_map_strips_decorations_and_skips_unresolvable(tmp_path):
+    symbols = build_symbol_map(_write(tmp_path), _CROSSWALK)
+
+    # "[CMS-54257]" has no locus id and no crosswalk entry.
+    assert not any(s.startswith("[") for s in symbols.values())
+    assert all(v.startswith("ncbigene:") for v in symbols)
+
+
+def test_build_symbol_map_skips_rows_with_no_symbol(tmp_path):
+    """Oryzabase uses "_" for a row it has no CGSNL symbol for."""
+    fixture = "\n".join(["\t".join(_COLUMNS), _row(**{"CGSNL Gene Symbol": "_", "RAP ID": "Os12g0559400"})]) + "\n"
+
+    assert build_symbol_map(_write(tmp_path, fixture), _CROSSWALK) == {}

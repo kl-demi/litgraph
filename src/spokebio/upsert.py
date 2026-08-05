@@ -2,7 +2,7 @@ from datetime import datetime
 
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
-from litgraph.db.neo4j_client import run_write
+from litgraph.db.neo4j_client import run_read, run_write
 from spokebio.models import AssociatedWith, EntityMention, ParticipatesIn, Pathway, Produces, Trait
 
 _KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
@@ -286,3 +286,40 @@ def backfill_gene_names(names: dict[str, str]) -> int:
         return 0
     params = [{"gene_id": k, "name": v} for k, v in names.items()]
     return run_write(_BACKFILL_GENE_NAMES, genes=params)[0]["named"]
+
+
+_READ_GENE_NAMES = """
+MATCH (n:Gene)
+WHERE n.name IS NOT NULL
+RETURN n.gene_id AS gene_id, n.name AS name
+"""
+
+# Unlike _BACKFILL_GENE_NAMES this SETs unconditionally, so it must only ever be handed
+# genes whose current name the caller has read and confirmed is a positional fallback.
+# The guard lives in the caller (pipeline.run_gene_name_backfill) rather than in Cypher
+# because deciding "is this a locus id" is a regex judgement, and ArcadeDB's Cypher layer
+# has no dependable regex predicate to express it.
+_UPGRADE_GENE_NAMES = """
+UNWIND $genes AS g
+MATCH (n:Gene {gene_id: g.gene_id})
+SET n.name = g.name
+RETURN count(n) AS upgraded
+"""
+
+
+def read_gene_names() -> dict[str, str]:
+    """Every Gene node's current display name, for deciding which are safe to upgrade."""
+    return {row["gene_id"]: row["name"] for row in run_read(_READ_GENE_NAMES)}
+
+
+def upgrade_gene_names(names: dict[str, str]) -> int:
+    """Replace a Gene's display name, for locus-id fallbacks that a curated symbol supersedes.
+
+    Overwrites, so callers must have verified via ``read_gene_names`` that each current name
+    is a bare locus id (``gene_crosswalk.is_locus_id``) -- never a curator- or
+    extractor-assigned symbol. Returns the count replaced.
+    """
+    if not names:
+        return 0
+    params = [{"gene_id": k, "name": v} for k, v in names.items()]
+    return run_write(_UPGRADE_GENE_NAMES, genes=params)[0]["upgraded"]

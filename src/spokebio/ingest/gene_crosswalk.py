@@ -183,38 +183,85 @@ def build_locus_identifier_crosswalk(path: str | Path) -> dict[str, str]:
 # later real symbol from landing (the backfill only fills nulls).
 _LOC_PLACEHOLDER_SYMBOL = re.compile(r"^LOC\d+$")
 _BARE_RAP_ID = re.compile(r"^Os\d{2}g\d{7}$")
+# MSU/TIGR's prefix is "LOC_", unrelated to NCBI's "LOC<GeneID>" placeholder above. Keep
+# both patterns anchored: a `startswith("LOC")` test would throw away every MSU id.
+_BARE_MSU_ID = re.compile(r"^LOC_Os\d{2}g\d{5}$")
+
+
+def is_locus_id(name: str) -> bool:
+    """Whether a display name is a bare locus id rather than a gene symbol."""
+    return bool(_BARE_RAP_ID.match(name) or _BARE_MSU_ID.match(name))
+
+
+def is_provisional_name(name: str) -> bool:
+    """Whether a display name carries no more information than the key it hangs off.
+
+    True for a bare locus id and for NCBI's ``LOC<GeneID>`` placeholder. Lets a later pass
+    tell "nobody actually named this" from "a curator or extractor named this", which is what
+    makes overwriting a name safe (see ``upsert.upgrade_gene_names``).
+
+    The placeholder counts because it is not a name at all -- it is the GeneID restated, and
+    extractors relay it verbatim (367 rice Gene nodes carry one from PubTator). Replacing it
+    with a curated symbol loses nothing.
+    """
+    return is_locus_id(name) or bool(_LOC_PLACEHOLDER_SYMBOL.match(name))
+
+
+def build_gene_symbol_map(path: str | Path) -> dict[str, str]:
+    """Build an ``ncbigene:<id>`` -> real gene symbol map from a gene_info file.
+
+    Real symbols only -- NCBI's ``LOC<GeneID>`` placeholder and its ``NEWENTRY`` filler are
+    excluded, so a hit here is always a name someone actually assigned. Rice has very few
+    (646 of 30,133 protein-coding rows, and over half of those are organellar genes carrying
+    conventional plastid/mitochondrial symbols): rice's nomenclature authority, Oryzabase's
+    CGSNL, does not feed NCBI, leaving Symbol_from_nomenclature_authority empty on all
+    39,965 rows. See ingest/oryzabase.py for the source that does have them.
+    """
+    symbols: dict[str, str] = {}
+    for row in iter_gene_info_rows(path):
+        gene_id = row.get("GeneID")
+        if not gene_id:
+            continue
+        symbol = (row.get("Symbol") or "-").strip()
+        if symbol in ("-", "") or symbol in _PLACEHOLDER_SYMBOLS or _LOC_PLACEHOLDER_SYMBOL.match(symbol):
+            continue
+        symbols[f"ncbigene:{gene_id}"] = symbol
+    return symbols
+
+
+def build_gene_locus_map(path: str | Path) -> dict[str, str]:
+    """Build an ``ncbigene:<id>`` -> locus id map from a gene_info file, RAP-DB preferred.
+
+    Not symbols, but the identifiers rice researchers search on, and far more use than the
+    bare key. RAP-DB (``Os01g0970700``) comes first because it annotates the current IRGSP-1.0
+    reference; MSU/TIGR (``LOC_Os01g73770``) is the older system most tools have migrated
+    away from, but it covers genes RAP-DB does not -- of rice's gene_info rows, 22,459 carry
+    a RAP id and 3,464 an MSU id, with only 419 carrying both, so the two are largely
+    disjoint and dropping MSU would strand its genes.
+    """
+    loci: dict[str, str] = {}
+    for row in iter_gene_info_rows(path):
+        gene_id = row.get("GeneID")
+        if not gene_id:
+            continue
+        joined = "\t".join(row.values())
+        match = _RAP_ID.search(joined) or _MSU_ID.search(joined)
+        if match:
+            loci[f"ncbigene:{gene_id}"] = match.group()
+    return loci
 
 
 def build_gene_name_map(path: str | Path) -> dict[str, str]:
     """Build an ``ncbigene:<id>`` -> display-name map from a gene_info file, for giving
     key-only Gene nodes something readable.
 
-    Two tiers, best first, and deliberately no third:
-    1. the real ``Symbol``, when NCBI has one;
-    2. otherwise the RAP-DB locus id from ``Other_designations`` -- not a symbol, but the
-       identifier rice researchers actually search on, and far more use than the key.
+    A real ``Symbol`` when NCBI has one, else a locus id (RAP-DB, then MSU/TIGR). Genes whose
+    only offer is NCBI's ``LOC<id>`` placeholder are **left out**, so they stay null and
+    remain fillable later. Writing it would restate the key and hide which genes genuinely
+    lack a symbol.
 
-    Genes whose only offer is NCBI's ``LOC<id>`` placeholder are **left out**, so they stay
-    null and remain fillable by a later extraction pass. On rice that keeps 1,378 of 11,672
-    honestly unnamed rather than cosmetically named.
-
-    Ordering matters operationally: run the extraction-derived passes (PubTator, the
-    Oryzabase gazetteer) before applying this, since ``upsert.backfill_gene_names`` fills
-    only nulls and a locus id here would otherwise pre-empt a real symbol later.
+    This file is the weakest of the three naming sources for rice -- see
+    ``build_gene_symbol_map`` for why -- so ``pipeline.run_gene_name_backfill`` layers
+    Oryzabase's curated symbols above it rather than calling this alone.
     """
-    names: dict[str, str] = {}
-    for row in iter_gene_info_rows(path):
-        gene_id = row.get("GeneID")
-        if not gene_id:
-            continue
-        symbol = (row.get("Symbol") or "-").strip()
-        if symbol not in ("-", "") and symbol not in _PLACEHOLDER_SYMBOLS and not _LOC_PLACEHOLDER_SYMBOL.match(symbol):
-            names[f"ncbigene:{gene_id}"] = symbol
-            continue
-        rap_id = next(
-            (t.strip() for t in (row.get("Other_designations") or "").split("|") if _BARE_RAP_ID.match(t.strip())),
-            None,
-        )
-        if rap_id:
-            names[f"ncbigene:{gene_id}"] = rap_id
-    return names
+    return build_gene_locus_map(path) | build_gene_symbol_map(path)

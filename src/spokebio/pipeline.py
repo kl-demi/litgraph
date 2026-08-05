@@ -5,7 +5,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from litgraph.db import arcadedb_http
-from litgraph.db.neo4j_client import run_read
+from litgraph.db.neo4j_client import chunked, run_read
 from spokebio.ingest.chebi_mesh_crosswalk import (
     DEFAULT_MESH_YEAR,
     build_crosswalk,
@@ -18,12 +18,16 @@ from spokebio.ingest.gaf import extract_participates_in as extract_gaf_participa
 from spokebio.ingest.gene_gazetteer import build_gazetteer, extract_mentions
 from spokebio.ingest.gene_crosswalk import (
     build_gene_identifier_crosswalk,
+    build_gene_name_map,
     build_locus_identifier_crosswalk,
     ensure_gene_info_file,
+    is_locus_id,
+    is_provisional_name,
 )
 from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.ingest.oryzabase import (
     DEFAULT_ORYZABASE_PATH,
+    build_symbol_map,
     ensure_oryzabase_file,
     extract_associated_with,
 )
@@ -38,6 +42,8 @@ from spokebio.ingest.trait_ontology import DEFAULT_TO_OBO_PATH, ensure_to_obo_fi
 from spokebio.models import AssociatedWith, EntityMention, ParticipatesIn, Pathway, Produces, Trait
 from spokebio.upsert import (
     backfill_gene_names,
+    read_gene_names,
+    upgrade_gene_names,
     mark_papers_checked,
     upsert_associated_with,
     upsert_mentions,
@@ -551,4 +557,68 @@ def run_gazetteer_mentions(
             f"gazetteer-mentions: +{totals['new_genes']} Gene nodes, "
             f"+{totals['new_mention_edges']} MENTIONS edges"
         )
+    return totals
+
+
+def run_gene_name_backfill(
+    organism: str = "Oryza_sativa",
+    oryzabase_path: str | None = None,
+    batch_size: int = 2000,
+    force_download: bool = False,
+) -> dict[str, int]:
+    """Give Gene nodes a readable display name, from the best source available per gene.
+
+    The GAF and Oryzabase loaders create Gene nodes key-only -- their sources are keyed on
+    locus ids and carry no symbol -- so queries return `gene: null`. This resolves each
+    ``ncbigene:<id>`` against reference files directly, no extraction involved.
+
+    Sources in priority order:
+    1. Oryzabase's curated CGSNL symbol -- rice's actual nomenclature authority, and the
+       only source with names like ``SD1``/``GHD7``. Does not feed NCBI, hence its absence
+       from gene_info.
+    2. gene_info's real ``Symbol``, which for rice is mostly organellar genes.
+    3. a locus id from gene_info, RAP-DB preferred over MSU/TIGR.
+
+    NCBI's ``LOC<GeneID>`` placeholder is never written (see build_gene_symbol_map): it
+    restates the key and would hide which genes genuinely lack a symbol.
+
+    Two kinds of write, because filling nulls alone leaves the graph worse than it looks. A
+    gene named by tier 3 on an earlier run displays a bare ``Os08g0238500`` forever, since
+    ``backfill_gene_names`` only fills nulls. So a name that is still merely *provisional* --
+    a bare locus id, or the ``LOC<GeneID>`` placeholder an extractor relayed -- is upgraded
+    when a real symbol becomes available. Only those, verified against what is actually
+    stored: a curator- or extractor-assigned symbol is never overwritten.
+    """
+    gene_info_path = ensure_gene_info_file(organism, force=force_download)
+    oryzabase = ensure_oryzabase_file(oryzabase_path or DEFAULT_ORYZABASE_PATH, force=force_download)
+
+    crosswalk = build_locus_identifier_crosswalk(gene_info_path)
+    curated = build_symbol_map(oryzabase, crosswalk)
+    fallbacks = build_gene_name_map(gene_info_path)
+    # Curated symbols win; gene_info fills in whatever Oryzabase has no row for.
+    best = fallbacks | curated
+    console.log(
+        f"gene-names: {len(curated)} curated Oryzabase symbols, {len(fallbacks)} gene_info names "
+        f"-> {len(best)} genes with a usable name"
+    )
+
+    current = read_gene_names()
+    to_fill = {g: n for g, n in best.items() if g not in current}
+    # Upgrade only a bare locus id, and only to something that is not itself one.
+    to_upgrade = {
+        g: n
+        for g, n in best.items()
+        if g in current and is_provisional_name(current[g]) and not is_provisional_name(n)
+    }
+
+    totals = {"genes_named": 0, "genes_upgraded": 0, "candidates": len(best)}
+    for chunk in chunked(sorted(to_fill), batch_size):
+        totals["genes_named"] += backfill_gene_names({g: to_fill[g] for g in chunk})
+    for chunk in chunked(sorted(to_upgrade), batch_size):
+        totals["genes_upgraded"] += upgrade_gene_names({g: to_upgrade[g] for g in chunk})
+
+    console.log(
+        f"gene-names: named {totals['genes_named']} key-only genes, "
+        f"upgraded {totals['genes_upgraded']} locus-id names to curated symbols"
+    )
     return totals

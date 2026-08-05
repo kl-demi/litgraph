@@ -173,3 +173,33 @@ def extract_associated_with(
         dropped_duplicate=dropped_duplicate,
         dropped_unknown_trait=dropped_unknown_trait,
     )
+
+
+# Oryzabase uses "_" for a row it has no CGSNL symbol for, alongside the usual dashes.
+_MISSING_SYMBOLS = frozenset({"", "-", "_", "NONE"})
+
+
+def build_symbol_map(path: str | Path, crosswalk: dict[str, str]) -> dict[str, str]:
+    """Build an ``ncbigene:<id>`` -> curated CGSNL gene symbol map.
+
+    This is the naming source rice actually has. Oryzabase's CGSNL is rice's nomenclature
+    authority, but it does not feed NCBI, so gene_info's Symbol column is nearly all
+    ``LOC<GeneID>`` placeholder while Oryzabase carries a real symbol on every one of its
+    ~22K rows -- including the genes rice genetics is built on (``SD1``, ``XA21``, ``GHD7``,
+    ``SUB1A``). Reads only the authoritative symbol column, not the synonyms, since this
+    picks a single display name rather than building a lookup index.
+
+    ``crosswalk`` maps an uppercased identifier to a Gene.gene_id -- use
+    ``gene_crosswalk.build_locus_identifier_crosswalk``. Resolution goes through the same
+    locus-ids-before-symbols ordering as ``_gene_candidates``, because a bare symbol like
+    ``CO`` or ``SALT`` collides across genes while a RAP/MSU id names exactly one locus.
+    """
+    symbols: dict[str, str] = {}
+    for row in iter_gene_rows(path):
+        symbol = (row.get(_SYMBOL_COLUMN) or "").strip(_SYMBOL_DECORATIONS)
+        if symbol.upper() in _MISSING_SYMBOLS:
+            continue
+        gene_id = next((crosswalk[c.upper()] for c in _gene_candidates(row) if c.upper() in crosswalk), None)
+        if gene_id is not None:
+            symbols.setdefault(gene_id, symbol)
+    return symbols

@@ -2,10 +2,14 @@ import gzip
 
 from spokebio.ingest.gene_crosswalk import (
     build_gene_identifier_crosswalk,
+    build_gene_locus_map,
     build_gene_name_map,
+    build_gene_symbol_map,
     build_locus_identifier_crosswalk,
     build_locus_tag_crosswalk,
     ensure_gene_info_file,
+    is_locus_id,
+    is_provisional_name,
     iter_gene_info_rows,
 )
 
@@ -220,3 +224,70 @@ def test_gene_name_map_never_emits_the_loc_placeholder(tmp_path):
 
 def test_gene_name_map_skips_newentry_placeholder(tmp_path):
     assert "ncbigene:4326819" not in build_gene_name_map(_rice_gene_info(tmp_path))
+
+
+# MSU/TIGR ids are the only identifier for a large, largely disjoint set of rice genes
+# (3,464 gene_info rows carry one, only 419 carry both an MSU and a RAP id), so dropping
+# them strands those genes with no name at all.
+_RICE_MSU_ONLY_ROW = "39947\t4323837\tLOC4323837\t-\t-\t-\t1\t-\tuncharacterized\tprotein-coding\t-\t-\t-\thypothetical protein LOC_Os01g73880\t20260706\t-"
+
+_RICE_TIER_FIXTURE = (
+    "\n".join([_HEADER, _RICE_REAL_SYMBOL_ROW, _RICE_LOC_PLACEHOLDER_ROW, _RICE_MSU_ONLY_ROW, _RICE_NOTHING_USABLE_ROW])
+    + "\n"
+)
+
+
+def _tier_gene_info(tmp_path):
+    path = tmp_path / "tiers.gene_info"
+    path.write_text(_RICE_TIER_FIXTURE)
+    return path
+
+
+def test_gene_name_map_falls_back_to_msu_when_there_is_no_rap_id(tmp_path):
+    assert build_gene_name_map(_tier_gene_info(tmp_path))["ncbigene:4323837"] == "LOC_Os01g73880"
+
+
+def test_gene_name_map_prefers_rap_over_msu(tmp_path):
+    """RAP-DB annotates the current IRGSP-1.0 reference; MSU/TIGR is the older system."""
+    row = "39947\t4400001\tLOC4400001\t-\t-\t-\t1\t-\tx\tprotein-coding\t-\t-\t-\tprotein Os01g0111100|LOC_Os01g11111\t20260706\t-"
+    path = tmp_path / "both.gene_info"
+    path.write_text("\n".join([_HEADER, row]) + "\n")
+
+    assert build_gene_name_map(path)["ncbigene:4400001"] == "Os01g0111100"
+
+
+def test_gene_symbol_map_excludes_locus_ids_and_placeholders(tmp_path):
+    """Kept separate from the locus map so a later pass can tell a curated name from a
+    positional fallback -- which is what makes upgrading safe."""
+    symbols = build_gene_symbol_map(_tier_gene_info(tmp_path))
+
+    assert symbols == {"ncbigene:4324813": "PHT4;3"}
+
+
+def test_gene_locus_map_covers_genes_with_no_symbol(tmp_path):
+    loci = build_gene_locus_map(_tier_gene_info(tmp_path))
+
+    assert loci["ncbigene:4323840"] == "Os01g0970700"
+    assert loci["ncbigene:4323837"] == "LOC_Os01g73880"
+    assert "ncbigene:4399999" not in loci  # no locus id of either kind
+
+
+def test_is_locus_id_distinguishes_fallbacks_from_symbols():
+    assert is_locus_id("Os01g0970700")
+    assert is_locus_id("LOC_Os01g73880")
+    # NCBI's placeholder is not a locus id, and neither are real symbols.
+    assert not is_locus_id("LOC4338919")
+    assert not is_locus_id("SD1")
+    assert not is_locus_id("PHT4;3")
+
+
+def test_is_provisional_name_also_covers_the_ncbi_placeholder(tmp_path):
+    """Extractors relay NCBI's LOC<GeneID> verbatim, and it is the key restated rather than a
+    name -- so a curated symbol may replace it, unlike a real symbol."""
+    assert is_provisional_name("LOC4338919")
+    assert is_provisional_name("Os01g0970700")
+    assert is_provisional_name("LOC_Os01g73880")
+    assert not is_provisional_name("SD1")
+    assert not is_provisional_name("PHT4;3")
+    # ...but it is still not a *locus id*, which is a narrower question.
+    assert not is_locus_id("LOC4338919")
