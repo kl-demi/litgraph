@@ -24,6 +24,19 @@ _UNIQUE_KEYS = [
     ("Trait", "trait_id"),
 ]
 
+# (vertex_type, property) -- secondary lookup keys, indexed NOTUNIQUE. `gene_id`
+# (`ncbigene:`) stays the one canonical unique key so PubTator- and pathway-sourced writes
+# always converge on the same node; `locus_id` carries the community identifier rice sources
+# actually cite (RAP-DB `Os01g0970700`, else MSU/TIGR `LOC_Os01g73880`) so they can resolve
+# a gene without a crosswalk round-trip. See docs/plant_schema.md's Gene ID crosswalk note.
+#
+# NOTUNIQUE is required, not cautious: 103 of rice's 26,977 locus ids map to more than one
+# NCBI gene (e.g. Os03g0120900 -> ncbigene:4324719 and ncbigene:4331436), typically the same
+# locus entered twice across assembly revisions. A UNIQUE index would reject those writes.
+_SECONDARY_KEYS = [
+    ("Gene", "locus_id"),
+]
+
 
 def ensure_schema() -> None:
     """Idempotently create the vertex/edge types and indexes this module relies on, on
@@ -42,6 +55,9 @@ def ensure_schema() -> None:
     for vertex_type, key_prop in _UNIQUE_KEYS:
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
         arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) UNIQUE")
+    for vertex_type, key_prop in _SECONDARY_KEYS:
+        arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
+        arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) NOTUNIQUE")
     for vertex_type in ("Organism", "Gene", "Compound", "Pathway", "Trait"):
         arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.name STRING")
     arcadedb_http.ensure_ddl("CREATE PROPERTY Pathway.source_db STRING")

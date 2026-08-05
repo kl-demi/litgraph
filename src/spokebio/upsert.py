@@ -323,3 +323,52 @@ def upgrade_gene_names(names: dict[str, str]) -> int:
         return 0
     params = [{"gene_id": k, "name": v} for k, v in names.items()]
     return run_write(_UPGRADE_GENE_NAMES, genes=params)[0]["upgraded"]
+
+
+# Null-only, same additive-only discipline as _BACKFILL_GENE_NAMES: locus_id is a stable
+# fact about a gene, so once set there is nothing to correct, and re-running must not
+# thrash it if a later gene_info release reshuffles which locus id it lists first.
+_BACKFILL_GENE_LOCUS_IDS = """
+UNWIND $genes AS g
+MATCH (n:Gene {gene_id: g.gene_id})
+WHERE n.locus_id IS NULL
+SET n.locus_id = g.locus_id
+RETURN count(n) AS assigned
+"""
+
+
+def backfill_gene_locus_ids(loci: dict[str, str]) -> int:
+    """Attach the community locus id (RAP-DB, else MSU/TIGR) to Gene nodes lacking one.
+
+    Secondary lookup key, not an identity: ``gene_id`` stays canonical, so this never creates
+    or re-keys a node. It exists so sources that cite a locus id -- which is most rice
+    literature and every rice annotation file -- can find a gene directly instead of going
+    through a crosswalk, and so `name` no longer has to double as an identifier. Returns the
+    count assigned.
+    """
+    if not loci:
+        return 0
+    params = [{"gene_id": k, "locus_id": v} for k, v in loci.items()]
+    return run_write(_BACKFILL_GENE_LOCUS_IDS, genes=params)[0]["assigned"]
+
+
+_FIND_GENES_BY_LOCUS = """
+UNWIND $locus_ids AS lid
+MATCH (n:Gene {locus_id: lid})
+RETURN lid AS locus_id, n.gene_id AS gene_id
+"""
+
+
+def find_genes_by_locus_id(locus_ids: list[str]) -> dict[str, list[str]]:
+    """Resolve community locus ids to Gene.gene_id via the secondary index.
+
+    Returns a list per locus id, not a single value: 103 of rice's locus ids legitimately map
+    to more than one NCBI gene (see schema_ext._SECONDARY_KEYS), so collapsing to one would
+    silently pick an arbitrary gene. Callers decide what to do with an ambiguous hit.
+    """
+    if not locus_ids:
+        return {}
+    resolved: dict[str, list[str]] = {}
+    for row in run_read(_FIND_GENES_BY_LOCUS, locus_ids=locus_ids):
+        resolved.setdefault(row["locus_id"], []).append(row["gene_id"])
+    return resolved

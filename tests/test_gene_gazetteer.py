@@ -333,3 +333,69 @@ def test_gene_name_backfill_only_upgrades_locus_id_names(mocker):
     # symbol, not a locus id -> untouched despite a symbol being available.
     # "locus" holds a bare locus id, "placeholder" holds NCBI's LOC<id> -- both provisional.
     assert upgrade.call_args.args[0] == {"locus": "DLH7", "placeholder": "AMY2A"}
+
+
+def test_backfill_gene_locus_ids_is_null_only(mocker):
+    """locus_id is a stable fact, so a re-run must not thrash one already set -- and it is a
+    secondary key, so this must never create or re-key a node."""
+    from spokebio.upsert import _BACKFILL_GENE_LOCUS_IDS, backfill_gene_locus_ids
+
+    mock_run_write = mocker.patch("spokebio.upsert.run_write", return_value=[{"assigned": 2}])
+
+    assert backfill_gene_locus_ids({"ncbigene:1": "Os01g0100100", "ncbigene:2": "LOC_Os01g01010"}) == 2
+    assert "WHERE n.locus_id IS NULL" in _BACKFILL_GENE_LOCUS_IDS
+    assert "MERGE" not in _BACKFILL_GENE_LOCUS_IDS  # MATCH only: never creates a Gene
+    assert mock_run_write.call_args.kwargs["genes"][0] == {"gene_id": "ncbigene:1", "locus_id": "Os01g0100100"}
+
+
+def test_backfill_gene_locus_ids_noop_on_empty(mocker):
+    from spokebio.upsert import backfill_gene_locus_ids
+
+    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    assert backfill_gene_locus_ids({}) == 0
+    mock_run_write.assert_not_called()
+
+
+def test_find_genes_by_locus_id_keeps_ambiguous_hits(mocker):
+    """103 rice locus ids map to more than one NCBI gene, so collapsing to a single value
+    would silently pick an arbitrary one."""
+    from spokebio.upsert import find_genes_by_locus_id
+
+    mocker.patch(
+        "spokebio.upsert.run_read",
+        return_value=[
+            {"locus_id": "Os03g0120900", "gene_id": "ncbigene:4324719"},
+            {"locus_id": "Os03g0120900", "gene_id": "ncbigene:4331436"},
+            {"locus_id": "Os01g0100100", "gene_id": "ncbigene:4326813"},
+        ],
+    )
+
+    assert find_genes_by_locus_id(["Os03g0120900", "Os01g0100100"]) == {
+        "Os03g0120900": ["ncbigene:4324719", "ncbigene:4331436"],
+        "Os01g0100100": ["ncbigene:4326813"],
+    }
+
+
+def test_find_genes_by_locus_id_noop_on_empty(mocker):
+    from spokebio.upsert import find_genes_by_locus_id
+
+    mock_run_read = mocker.patch("spokebio.upsert.run_read")
+    assert find_genes_by_locus_id([]) == {}
+    mock_run_read.assert_not_called()
+
+
+def test_secondary_key_index_is_notunique(mocker):
+    """A UNIQUE index would reject the 103 rice locus ids that map to more than one gene."""
+    from spokebio import schema_ext
+
+    mocker.patch.object(schema_ext, "get_settings", return_value=mocker.Mock(graph_backend="arcadedb"))
+    ddl = mocker.patch.object(schema_ext.arcadedb_http, "ensure_ddl")
+
+    schema_ext.ensure_schema()
+
+    statements = [c.args[0] for c in ddl.call_args_list]
+    assert "CREATE PROPERTY Gene.locus_id STRING" in statements
+    assert "CREATE INDEX ON Gene (locus_id) NOTUNIQUE" in statements
+    assert "CREATE INDEX ON Gene (locus_id) UNIQUE" not in statements
+    # gene_id remains the one canonical unique key.
+    assert "CREATE INDEX ON Gene (gene_id) UNIQUE" in statements

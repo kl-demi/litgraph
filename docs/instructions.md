@@ -397,7 +397,46 @@ re-queried, so genes stranded by an earlier run need their `PubtatorChecked` row
 before a re-run can name them (bookkeeping nodes only — every write on that path is
 insert-if-missing, so re-running is safe).
 
-### 7. Bootstrap the stats counters
+### 7. Attach locus ids as a secondary lookup key
+
+```bash
+uv run python scripts/backfill_gene_locus_ids.py --organism Oryza_sativa
+```
+
+`Gene.gene_id` (`ncbigene:`) stays the one canonical unique key — this never creates or
+re-keys a node. It adds `Gene.locus_id` alongside, indexed **NOTUNIQUE**, carrying the
+community identifier rice sources actually cite (RAP-DB `Os01g0970700`, else MSU/TIGR).
+This is option 2 of `plant_schema.md`'s Gene ID crosswalk note.
+
+Two things it buys: rice sources cite locus ids rather than NCBI GeneIDs, so a locus-keyed
+lookup (`upsert.find_genes_by_locus_id`) no longer needs a crosswalk rebuilt from gene_info
+per query; and `name` stops having to double as an identifier — 6,317 rice genes display a
+locus id as their name only because no symbol exists for them.
+
+**NOTUNIQUE is required, not cautious.** Verified in the live graph: `Os11g0303600` is the
+locus id of four distinct genes.
+
+```
+ncbigene:4350343  COMT23      ncbigene:4350342  COMT22
+ncbigene:4345187  ASMT11      ncbigene:9269972  COMT21
+```
+
+A UNIQUE index would have rejected those writes. That is why `find_genes_by_locus_id`
+returns a **list** per locus id rather than collapsing to one — picking arbitrarily would
+silently attach data to the wrong gene, the same failure mode as the cross-species symbol
+collisions below.
+
+Result on rice: 15,777 of 19,578 Gene nodes carry a locus id. The 3,801 without are genes
+whose gene_info row lists neither a RAP nor an MSU id.
+
+**What this does not fix.** `SD1`, `GHD7` and `SUB1A` are still absent, because they are not
+`Gene` nodes at all — their RAP ids have no `ncbigene:` mapping, and `gene_id` remains the
+required unique key. Admitting them would mean allowing a non-`ncbigene:` key namespace
+(e.g. `rapdb:Os01g0883800`), which risks a duplicate node if NCBI later assigns a GeneID.
+`locus_id` makes that duplicate *detectable*, so it is a prerequisite for that decision
+rather than the decision itself.
+
+### 8. Bootstrap the stats counters
 
 `stats overview` reads cached counters on a `GraphStats` node, which no ingestion job
 populates from scratch:

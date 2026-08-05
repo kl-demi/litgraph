@@ -18,6 +18,7 @@ from spokebio.ingest.gaf import extract_participates_in as extract_gaf_participa
 from spokebio.ingest.gene_gazetteer import build_gazetteer, extract_mentions
 from spokebio.ingest.gene_crosswalk import (
     build_gene_identifier_crosswalk,
+    build_gene_locus_map,
     build_gene_name_map,
     build_locus_identifier_crosswalk,
     ensure_gene_info_file,
@@ -41,6 +42,7 @@ from spokebio.ingest.reactome import (
 from spokebio.ingest.trait_ontology import DEFAULT_TO_OBO_PATH, ensure_to_obo_file, extract_traits
 from spokebio.models import AssociatedWith, EntityMention, ParticipatesIn, Pathway, Produces, Trait
 from spokebio.upsert import (
+    backfill_gene_locus_ids,
     backfill_gene_names,
     read_gene_names,
     upgrade_gene_names,
@@ -621,4 +623,31 @@ def run_gene_name_backfill(
         f"gene-names: named {totals['genes_named']} key-only genes, "
         f"upgraded {totals['genes_upgraded']} locus-id names to curated symbols"
     )
+    return totals
+
+
+def run_gene_locus_backfill(
+    organism: str = "Oryza_sativa", batch_size: int = 2000, force_download: bool = False
+) -> dict[str, int]:
+    """Attach the community locus id to Gene nodes as a secondary lookup key.
+
+    ``gene_id`` (``ncbigene:``) stays the one canonical unique key, so this never creates or
+    re-keys a node -- it adds ``locus_id`` alongside, indexed NOTUNIQUE (103 rice locus ids
+    legitimately map to more than one NCBI gene). See docs/plant_schema.md's Gene ID
+    crosswalk note, option 2.
+
+    Two things this buys. Rice sources cite locus ids, not NCBI GeneIDs, so a locus-keyed
+    lookup stops needing a crosswalk rebuilt from gene_info on every query. And it lets
+    ``name`` stop doubling as an identifier: 6,317 rice genes currently display a locus id as
+    their name only because no symbol exists for them.
+    """
+    gene_info_path = ensure_gene_info_file(organism, force=force_download)
+    loci = build_gene_locus_map(gene_info_path)
+    console.log(f"gene-locus: {len(loci)} genes have a locus id in {organism}'s gene_info")
+
+    totals = {"candidates": len(loci), "genes_assigned": 0}
+    for chunk in chunked(sorted(loci), batch_size):
+        totals["genes_assigned"] += backfill_gene_locus_ids({g: loci[g] for g in chunk})
+
+    console.log(f"gene-locus: assigned locus_id to {totals['genes_assigned']} Gene nodes")
     return totals
