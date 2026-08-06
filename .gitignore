@@ -16,4 +16,5 @@ data/*
 # are public PubMed titles/abstracts, so nothing sensitive is published.
 !data/eval/
 !data/eval/*.csv
+docs/
 logs/
