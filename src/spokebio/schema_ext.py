@@ -1,64 +1,37 @@
-from litgraph.config import get_settings
-from litgraph.db import arcadedb_http
+"""Biology vertex/edge types, declared into litgraph's shared schema registry."""
 
-_VERTEX_TYPES = ["Organism", "Gene", "Compound", "PubtatorChecked", "Pathway", "Trait"]
-_EDGE_TYPES = ["MENTIONS", "PARTICIPATES_IN", "PRODUCES", "ASSOCIATED_WITH"]
-
-# (vertex_type, key_property) -- Compound's key is named compound_id rather than
-# chebi_id: see ingest/pubtator.py's module docstring for why. PubtatorChecked is a
-# bookkeeping node (not a domain entity) marking "PubTator3 has already been queried
-# for this paper", so re-runs don't keep re-fetching papers that legitimately had zero
-# qualifying mentions -- kept as its own node rather than a Paper property so this
-# never has to write to a Paper vertex (see upsert.py's docstring on the ArcadeDB
-# vector-index bug). Pathway holds both GO's species-agnostic biological_process terms
-# (source_db="GO") and Reactome's human-specific pathways (source_db="Reactome") in the
-# same node type/key -- see docs/spoke_schema.md.
-_UNIQUE_KEYS = [
-    ("Organism", "taxon_id"),
-    ("Gene", "gene_id"),
-    ("Compound", "compound_id"),
-    ("PubtatorChecked", "paper_id"),
-    ("Pathway", "pathway_id"),
-    # Trait Ontology terms (source_db="TO"), keyed on TO's native id verbatim -- same
-    # no-synthetic-prefix rule as Pathway, see docs/spoke_schema.md.
-    ("Trait", "trait_id"),
-]
-
-# (vertex_type, property) -- secondary lookup keys, indexed NOTUNIQUE. `gene_id`
-# (`ncbigene:`) stays the one canonical unique key so PubTator- and pathway-sourced writes
-# always converge on the same node; `locus_id` carries the community identifier rice sources
-# actually cite (RAP-DB `Os01g0970700`, else MSU/TIGR `LOC_Os01g73880`) so they can resolve
-# a gene without a crosswalk round-trip. See docs/plant_schema.md's Gene ID crosswalk note.
-#
-# NOTUNIQUE is required, not cautious: 103 of rice's 26,977 locus ids map to more than one
-# NCBI gene (e.g. Os03g0120900 -> ncbigene:4324719 and ncbigene:4331436), typically the same
-# locus entered twice across assembly revisions. A UNIQUE index would reject those writes.
-_SECONDARY_KEYS = [
-    ("Gene", "locus_id"),
-]
+from litgraph.db.registry import EdgeType, NodeType, Prop, register
 
 
-def ensure_schema() -> None:
-    """Idempotently create the vertex/edge types and indexes this module relies on, on
-    top of litgraph's existing Paper/Author/Category schema. ArcadeDB-only for now,
-    matching litgraph's own default backend and docs/plant_schema.md's scope.
-    """
-    settings = get_settings()
-    if settings.graph_backend != "arcadedb":
-        raise NotImplementedError("spokebio schema currently only supports the arcadedb backend")
+ORGANISM = NodeType("Organism", key="taxon_id", props=(Prop("name"),))
 
-    for vertex_type in _VERTEX_TYPES:
-        arcadedb_http.ensure_ddl(f"CREATE VERTEX TYPE {vertex_type} IF NOT EXISTS")
-    for edge_type in _EDGE_TYPES:
-        arcadedb_http.ensure_ddl(f"CREATE EDGE TYPE {edge_type} IF NOT EXISTS")
+GENE = NodeType("Gene", key="gene_id", props=(Prop("name"), Prop("locus_id", indexed=True)))
 
-    for vertex_type, key_prop in _UNIQUE_KEYS:
-        arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
-        arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) UNIQUE")
-    for vertex_type, key_prop in _SECONDARY_KEYS:
-        arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.{key_prop} STRING")
-        arcadedb_http.ensure_ddl(f"CREATE INDEX ON {vertex_type} ({key_prop}) NOTUNIQUE")
-    for vertex_type in ("Organism", "Gene", "Compound", "Pathway", "Trait"):
-        arcadedb_http.ensure_ddl(f"CREATE PROPERTY {vertex_type}.name STRING")
-    arcadedb_http.ensure_ddl("CREATE PROPERTY Pathway.source_db STRING")
-    arcadedb_http.ensure_ddl("CREATE PROPERTY Trait.source_db STRING")
+COMPOUND = NodeType("Compound", key="compound_id", props=(Prop("name"),))
+
+# PubtatorChecked is a bookkeeping node, marking "PubTator3 has already been queried for this 
+# paper". Kept as its own node rather than a Paper property so this never has to write to a Paper vertex
+# (see upsert.py's docstring on the ArcadeDB vector-index bug)
+PUBTATOR_CHECKED = NodeType("PubtatorChecked", key="paper_id")
+
+PATHWAY = NodeType("Pathway", key="pathway_id", props=(Prop("name"), Prop("source_db")))
+
+TRAIT = NodeType("Trait", key="trait_id", props=(Prop("name"), Prop("source_db")))
+
+MENTIONS        = EdgeType("MENTIONS", src="Paper", dst="Gene", props=(Prop("source"),))
+PARTICIPATES_IN = EdgeType("PARTICIPATES_IN", src="Gene", dst="Pathway", props=(Prop("evidence_code"),))
+PRODUCES        = EdgeType("PRODUCES", src="Pathway", dst="Compound", props=(Prop("evidence_code"),))
+ASSOCIATED_WITH = EdgeType("ASSOCIATED_WITH", src="Gene", dst="Trait", props=(Prop("source_db"),))
+
+register(
+    ORGANISM,
+    GENE,
+    COMPOUND,
+    PUBTATOR_CHECKED,
+    PATHWAY,
+    TRAIT,
+    MENTIONS,
+    PARTICIPATES_IN,
+    PRODUCES,
+    ASSOCIATED_WITH,
+)

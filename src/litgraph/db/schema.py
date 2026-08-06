@@ -1,89 +1,62 @@
+"""Core paper-graph types, declared into the shared schema registry."""
+
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_write
+from litgraph.db.registry import EdgeType, NodeType, Prop, PropType, arcadedb_ddl, neo4j_ddl, register, registry
+from litgraph.models import PAPER_IDENTIFIERS
 
-_ARCADEDB_VERTEX_TYPES = ["Paper", "Category", "Author", "GraphStats"]
-_ARCADEDB_EDGE_TYPES = ["CITES", "IN_CATEGORY", "AUTHORED"]
+# A Prop for each identifier scheme, to supply to the PAPER NodeType below.
+_IDENTIFIER_PROPS = tuple(Prop(ns.column, PropType.STRING, indexed=True) for ns in PAPER_IDENTIFIERS)
 
-_ARCADEDB_UNIQUE_INDEXES = [
-    ("Paper", "id", "STRING"),
-    ("Category", "code", "STRING"),
-    ("Author", "name", "STRING"),
-    ("GraphStats", "id", "STRING"),
-]
+PAPER = NodeType(
+    name="Paper",
+    key="id",
+    props=(
+        *_IDENTIFIER_PROPS,
+        Prop("enriched_at", PropType.DATETIME, indexed=True),
+        Prop("is_stub", PropType.BOOLEAN, indexed=True),
+    ),
+    fulltext=("title", "abstract"),
+    vector="embedding",
+)
 
-_ARCADEDB_RANGE_INDEXES = [
-    ("Paper", "arxiv_id", "STRING"),
-    ("Paper", "pmid", "STRING"),
-    ("Paper", "s2_paper_id", "STRING"),
-    ("Paper", "enriched_at", "DATETIME"),
-    ("Paper", "is_stub", "BOOLEAN"),
-]
+CATEGORY = NodeType(
+    name="Category",
+    key="code",
+    props=(
+        Prop("vocabulary"),
+        Prop("name"),
+    ),
+)
 
-_CONSTRAINTS = [
-    "CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE",
-    "CREATE CONSTRAINT category_code IF NOT EXISTS FOR (c:Category) REQUIRE c.code IS UNIQUE",
-    "CREATE CONSTRAINT author_name IF NOT EXISTS FOR (a:Author) REQUIRE a.name IS UNIQUE",
-    "CREATE CONSTRAINT graphstats_id IF NOT EXISTS FOR (g:GraphStats) REQUIRE g.id IS UNIQUE",
-]
+AUTHOR = NodeType(name="Author", key="name")
+"""A paper's author, keyed on name. No disambiguation across name collisions."""
 
-_RANGE_INDEXES = [
-    "CREATE INDEX paper_arxiv_id IF NOT EXISTS FOR (p:Paper) ON (p.arxiv_id)",
-    "CREATE INDEX paper_pmid IF NOT EXISTS FOR (p:Paper) ON (p.pmid)",
-    "CREATE INDEX paper_s2_id IF NOT EXISTS FOR (p:Paper) ON (p.s2_paper_id)",
-    "CREATE INDEX paper_enriched_at IF NOT EXISTS FOR (p:Paper) ON (p.enriched_at)",
-    "CREATE INDEX paper_is_stub IF NOT EXISTS FOR (p:Paper) ON (p.is_stub)",
-]
+GRAPH_STATS = NodeType(name="GraphStats", key="id")
+"""A singleton holding the counters for `stats overview`, so it never has to full-scan
+the graph."""
 
-_FULLTEXT_INDEX = """
-CREATE FULLTEXT INDEX paper_fulltext IF NOT EXISTS
-FOR (p:Paper) ON EACH [p.title, p.abstract]
-"""
+CITES = EdgeType("CITES", src="Paper", dst="Paper")
 
-_VECTOR_INDEX = """
-CREATE VECTOR INDEX paper_embedding IF NOT EXISTS
-FOR (p:Paper) ON (p.embedding)
-OPTIONS {{indexConfig: {{
-    `vector.dimensions`: {dimensions},
-    `vector.similarity_function`: 'cosine'
-}}}}
-"""
+IN_CATEGORY = EdgeType("IN_CATEGORY", src="Paper", dst="Category")
+
+AUTHORED = EdgeType("AUTHORED", src="Author", dst="Paper")
+
+register(PAPER, CATEGORY, AUTHOR, GRAPH_STATS, CITES, IN_CATEGORY, AUTHORED)
 
 
 def ensure_schema() -> None:
-    """Idempotently create all constraints and indexes the pipeline relies on."""
+    """Idempotently create every registered type, constraint and index.
+
+    Pull settings (which backend, embedding dimensions) and drive the ArcadeDB/Neo4j DDL.
+    """
     settings = get_settings()
     if settings.graph_backend == "neo4j":
-        for stmt in [*_CONSTRAINTS, *_RANGE_INDEXES, _FULLTEXT_INDEX]:
-            run_write(stmt)
-        run_write(_VECTOR_INDEX.format(dimensions=settings.embedding_dimensions))
+        for statement in neo4j_ddl(registry, settings.embedding_dimensions):
+            run_write(statement)
         return
-    _ensure_arcadedb_schema(settings)
 
-
-def _ensure_arcadedb_schema(settings) -> None:
-    """ArcadeDB's Cypher layer has no DDL of its own (CREATE CONSTRAINT/INDEX aren't
-    part of openCypher) — schema setup goes over the HTTP/SQL API instead."""
     arcadedb_http.ensure_database()
-
-    for vertex_type in _ARCADEDB_VERTEX_TYPES:
-        arcadedb_http.ensure_ddl(f"CREATE VERTEX TYPE {vertex_type} IF NOT EXISTS")
-    for edge_type in _ARCADEDB_EDGE_TYPES:
-        arcadedb_http.ensure_ddl(f"CREATE EDGE TYPE {edge_type} IF NOT EXISTS")
-
-    for type_name, prop, prop_type in [*_ARCADEDB_UNIQUE_INDEXES, *_ARCADEDB_RANGE_INDEXES]:
-        arcadedb_http.ensure_ddl(f"CREATE PROPERTY {type_name}.{prop} {prop_type}")
-    arcadedb_http.ensure_ddl("CREATE PROPERTY Paper.title STRING")
-    arcadedb_http.ensure_ddl("CREATE PROPERTY Paper.abstract STRING")
-    arcadedb_http.ensure_ddl("CREATE PROPERTY Paper.embedding ARRAY_OF_FLOATS")
-
-    for type_name, prop, _ in _ARCADEDB_UNIQUE_INDEXES:
-        arcadedb_http.ensure_ddl(f"CREATE INDEX ON {type_name} ({prop}) UNIQUE")
-    for type_name, prop, _ in _ARCADEDB_RANGE_INDEXES:
-        arcadedb_http.ensure_ddl(f"CREATE INDEX ON {type_name} ({prop}) NOTUNIQUE")
-
-    arcadedb_http.ensure_ddl("CREATE INDEX ON Paper (title, abstract) FULL_TEXT")
-    arcadedb_http.ensure_ddl(
-        "CREATE INDEX ON Paper (embedding) LSM_VECTOR METADATA "
-        f'{{"dimensions": {settings.embedding_dimensions}, "similarity": "COSINE"}}'
-    )
+    for statement in arcadedb_ddl(registry, settings.embedding_dimensions):
+        arcadedb_http.ensure_ddl(statement)
