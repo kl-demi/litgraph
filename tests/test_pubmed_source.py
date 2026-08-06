@@ -14,7 +14,7 @@ def _article_fragment(pmid: str) -> str:
       <AuthorList></AuthorList>
     </Article>
     <MeshHeadingList>
-      <MeshHeading><DescriptorName MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
+      <MeshHeading><DescriptorName UI="D000715" MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
     </MeshHeadingList>
   </MedlineCitation>
 </PubmedArticle>"""
@@ -34,7 +34,7 @@ _EFETCH_XML = """<PubmedArticleSet>
       <AuthorList><Author><LastName>Doe</LastName><ForeName>Jane</ForeName></Author></AuthorList>
     </Article>
     <MeshHeadingList>
-      <MeshHeading><DescriptorName MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
+      <MeshHeading><DescriptorName UI="D000715" MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
     </MeshHeadingList>
   </MedlineCitation>
 </PubmedArticle>
@@ -87,7 +87,9 @@ def test_fetch_new_papers_parses_and_paginates(mocker):
     assert paper.pmid == "12345678"
     assert paper.title == "A Great Paper About Anatomy"
     assert paper.source == "pubmed"
-    assert paper.categories == ["Anatomy"]
+    assert paper.id == "pmid:12345678"
+    assert [c.code for c in paper.categories] == ["mesh:D000715"]
+    assert paper.categories[0].name == "Anatomy"
 
     esearch_params = fake_client.get_calls[0][1]
     assert esearch_params["term"] == '"Anatomy"[MeSH Major Topic]'

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import arxiv
 
 from litgraph.db.neo4j_client import run_read, run_write
-from litgraph.models import Paper
+from litgraph.models import Paper, Source, arxiv_category
 
 _VERSION_SUFFIX = re.compile(r"v\d+$")
 
@@ -51,14 +51,14 @@ def _result_to_paper(result: arxiv.Result) -> Paper:
         title=result.title.replace("\n", " ").strip(),
         abstract=result.summary.replace("\n", " ").strip(),
         authors=[a.name for a in result.authors],
-        categories=list(result.categories),
-        primary_category=result.primary_category,
+        categories=[arxiv_category(c) for c in result.categories],
+        primary_category=arxiv_category(result.primary_category).code if result.primary_category else None,
         published_date=result.published.date() if result.published else None,
         updated_date=result.updated.date() if result.updated else None,
         doi=result.doi,
         journal_ref=result.journal_ref,
         comments=result.comment,
-        source="arxiv",
+        source=Source.ARXIV,
         fetched_at=datetime.now(UTC),
     )
 

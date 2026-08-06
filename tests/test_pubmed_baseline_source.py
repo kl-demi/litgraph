@@ -24,8 +24,8 @@ _ARTICLE_ANATOMY = """
       </AuthorList>
     </Article>
     <MeshHeadingList>
-      <MeshHeading><DescriptorName MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
-      <MeshHeading><DescriptorName MajorTopicYN="N">Humans</DescriptorName></MeshHeading>
+      <MeshHeading><DescriptorName UI="D000715" MajorTopicYN="Y">Anatomy</DescriptorName></MeshHeading>
+      <MeshHeading><DescriptorName UI="D006801" MajorTopicYN="N">Humans</DescriptorName></MeshHeading>
     </MeshHeadingList>
   </MedlineCitation>
 </PubmedArticle>
@@ -42,7 +42,7 @@ _ARTICLE_UNRELATED = """
       <AuthorList></AuthorList>
     </Article>
     <MeshHeadingList>
-      <MeshHeading><DescriptorName MajorTopicYN="Y">Cardiology</DescriptorName></MeshHeading>
+      <MeshHeading><DescriptorName UI="D002309" MajorTopicYN="Y">Cardiology</DescriptorName></MeshHeading>
     </MeshHeadingList>
   </MedlineCitation>
 </PubmedArticle>
@@ -65,8 +65,11 @@ def test_parses_basic_fields(tmp_path):
     assert paper.title == "A Great Paper About Anatomy"
     assert paper.abstract == "This is the abstract."
     assert paper.authors == ["Jane Doe", "John Smith"]
-    assert paper.categories == ["Anatomy", "Humans"]
-    assert paper.primary_category == "Anatomy"
+    # Major topics only, so `Humans` (MajorTopicYN="N") is dropped.
+    assert [c.code for c in paper.categories] == ["mesh:D000715"]
+    assert [c.name for c in paper.categories] == ["Anatomy"]
+    assert {c.vocabulary for c in paper.categories} == {"mesh"}
+    assert paper.primary_category == "mesh:D000715"
     assert paper.published_date == date(2021, 1, 4)
     assert paper.updated_date == date(2021, 2, 1)
     assert paper.doi == "10.1000/anat.1"
@@ -78,6 +81,36 @@ def test_filters_by_mesh_terms(tmp_path):
     path = _write_xml(tmp_path, [_ARTICLE_ANATOMY, _ARTICLE_UNRELATED])
     papers = list(iter_pubmed_baseline_papers(path, mesh_terms=["Anatomy"]))
     assert [p.pmid for p in papers] == ["12345678"]
+
+
+def test_mesh_term_filter_ignores_non_major_headings(tmp_path):
+    """The filter matches subject headings, so a term applied in passing no longer pulls the
+    paper in."""
+    path = _write_xml(tmp_path, [_ARTICLE_ANATOMY])
+    assert list(iter_pubmed_baseline_papers(path, mesh_terms=["Humans"])) == []
+
+
+def test_a_paper_flagging_no_major_topic_keeps_all_headings(tmp_path):
+    """Roughly a third of PubMed flags nothing major, so dropping unconditionally would leave
+    those papers uncategorized."""
+    article = _ARTICLE_ANATOMY.replace('MajorTopicYN="Y"', 'MajorTopicYN="N"')
+    papers = list(iter_pubmed_baseline_papers(_write_xml(tmp_path, [article])))
+
+    assert [c.name for c in papers[0].categories] == ["Anatomy", "Humans"]
+    assert papers[0].primary_category == "mesh:D000715"
+
+
+def test_a_heading_without_a_ui_is_skipped(tmp_path):
+    """There would be no key to write it under."""
+    article = _ARTICLE_ANATOMY.replace(' UI="D000715"', "")
+    papers = list(iter_pubmed_baseline_papers(_write_xml(tmp_path, [article])))
+
+    assert [c.code for c in papers[0].categories] == ["mesh:D006801"]
+
+
+def test_paper_id_is_namespaced(tmp_path):
+    papers = list(iter_pubmed_baseline_papers(_write_xml(tmp_path, [_ARTICLE_ANATOMY])))
+    assert papers[0].id == "pmid:12345678"
 
 
 def test_filters_by_date_range(tmp_path):

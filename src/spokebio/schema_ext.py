@@ -2,6 +2,10 @@
 
 from litgraph.db.registry import EdgeType, NodeType, Prop, register
 
+# Importing this registers the core paper types, which MENTIONS' `src="Paper"` depends on,
+# and re-exports the shared ensure_schema() so callers need only this module.
+from litgraph.db.schema import ensure_schema as ensure_schema
+
 
 ORGANISM = NodeType("Organism", key="taxon_id", props=(Prop("name"),))
 

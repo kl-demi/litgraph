@@ -1,80 +1,172 @@
 from datetime import datetime
 
+import pytest
+
 from litgraph.graph import upsert
-from litgraph.models import CitationStub, EnrichmentResult, Paper
+from litgraph.models import PAPER_IDENTIFIERS, CitationStub, EnrichmentResult, Paper, arxiv_category, mesh_heading
+
+_STATS_DELTA_KEYS = (
+    "new_papers",
+    "upgraded_stubs",
+    "embedded_delta",
+    "batch_min_date",
+    "batch_max_date",
+    "new_categories",
+    "new_edges",
+    "new_authors",
+    "new_stubs",
+    "newly_enriched_count",
+)
 
 
-def _mock_run_write(mocker, **first_call_results):
-    """Mock run_write so every call returns a delta row a stats-apply call can consume.
-
-    Each upsert query now returns one row of stats deltas; `first_call_results` lets a
-    test override specific delta keys (e.g. new_papers=1) while everything else
-    defaults to 0/None, since the stats-apply call unpacks `**delta` as kwargs.
-    """
-    defaults = {
-        "new_papers": 0,
-        "upgraded_stubs": 0,
-        "embedded_delta": 0,
-        "batch_min_date": None,
-        "batch_max_date": None,
-        "new_categories": 0,
-        "new_edges": 0,
-        "new_authors": 0,
-        "new_stubs": 0,
-        "newly_enriched_count": 0,
-    }
-    row = {**defaults, **first_call_results}
-    mock_run_write = mocker.patch.object(upsert, "run_write")
-    mock_run_write.return_value = [row]
-    return mock_run_write
+def _mock_run_write(mocker, **overrides):
+    """Mock run_write so every call returns one delta row a stats-apply call can consume as
+    `**kwargs`."""
+    row = {key: None if key.endswith("_date") else 0 for key in _STATS_DELTA_KEYS} | overrides
+    mock = mocker.patch.object(upsert, "run_write")
+    mock.return_value = [row]
+    return mock
 
 
-def test_upsert_papers_builds_expected_params(mocker):
-    mock_run_write = _mock_run_write(mocker)
-    paper = Paper(arxiv_id="2101.00001", title="Title", abstract="Abstract", authors=["Jane Doe"], categories=["cs.CL"])
+def _mock_run_script(mocker, value=0):
+    return mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": value}])
+
+
+def _kwargs_containing(mock, key):
+    return next(call.kwargs for call in mock.call_args_list if key in call.kwargs)
+
+
+# --- Paper params -----------------------------------------------------------------------
+
+
+def test_paper_params_carry_the_namespaced_id():
+    params = upsert._paper_params(Paper(arxiv_id="2101.00001", title="T"))
+    assert params["id"] == "arxiv:2101.00001"
+
+
+@pytest.mark.parametrize("namespace", PAPER_IDENTIFIERS, ids=lambda ns: ns.prefix)
+def test_paper_params_include_every_identifier_column(namespace):
+    """Every column is written on every upsert, so an absent namespace must appear as None
+    rather than be omitted."""
+    params = upsert._paper_params(Paper(pmid="12345678", title="T"))
+    assert namespace.column in params
+
+
+def test_paper_params_null_absent_identifier_columns():
+    params = upsert._paper_params(Paper(pmid="12345678", title="T"))
+    assert (params["arxiv_id"], params["pmid"], params["s2_paper_id"]) == (None, "12345678", None)
+
+
+def test_paper_params_store_categories_as_a_flat_code_array():
+    """Keeps `$category IN p.categories` working; vocabulary and name live on the Category
+    node instead."""
+    paper = Paper(arxiv_id="2101.00001", title="T", categories=[arxiv_category("cs.CL"), mesh_heading("D1", "One")])
+    assert upsert._paper_params(paper)["categories"] == ["arxiv:cs.CL", "mesh:D1"]
+
+
+def test_paper_params_send_source_as_a_plain_string():
+    """The Bolt driver would otherwise send an enum object where the vertex expects a
+    string."""
+    source = upsert._paper_params(Paper(arxiv_id="2101.00001", title="T", source="pubmed"))["source"]
+    assert source == "pubmed" and type(source) is str
+
+
+def test_paper_params_isoformat_dates_and_timestamps():
+    paper = Paper(arxiv_id="2101.00001", title="T", fetched_at=datetime(2024, 1, 2, 3, 4, 5))
+    params = upsert._paper_params(paper)
+    assert params["fetched_at"] == "2024-01-02T03:04:05"
+    assert params["published_date"] is None
+
+
+# --- Category params --------------------------------------------------------------------
+
+
+def test_category_params_flatten_one_row_per_pair():
+    paper = Paper(arxiv_id="2101.00001", title="T", categories=[mesh_heading("D009422", "Nervous System")])
+    assert upsert._category_params([paper]) == [
+        {
+            "paper_id": "arxiv:2101.00001",
+            "code": "mesh:D009422",
+            "vocabulary": "mesh",
+            "name": "Nervous System",
+        }
+    ]
+
+
+def test_category_params_dedupe_a_repeated_code():
+    """A duplicate would double-count Category.paper_count on first write."""
+    paper = Paper(arxiv_id="2101.00001", title="T", categories=[arxiv_category("cs.CL"), arxiv_category("cs.CL")])
+    assert len(upsert._category_params([paper])) == 1
+
+
+def test_category_params_keep_the_same_code_on_different_papers():
+    papers = [Paper(arxiv_id=f"2101.0000{i}", title="T", categories=[arxiv_category("cs.CL")]) for i in (1, 2)]
+    assert len(upsert._category_params(papers)) == 2
+
+
+def test_category_params_are_empty_without_categories():
+    assert upsert._category_params([Paper(arxiv_id="2101.00001", title="T")]) == []
+
+
+# --- upsert_papers ----------------------------------------------------------------------
+
+
+def test_upsert_papers_writes_papers_categories_and_authors(mocker):
+    mock = _mock_run_write(mocker)
+    paper = Paper(
+        arxiv_id="2101.00001",
+        title="Title",
+        authors=["Jane Doe"],
+        categories=[arxiv_category("cs.CL")],
+    )
 
     upsert.upsert_papers([paper])
 
-    calls = mock_run_write.call_args_list
-    assert len(calls) == 6
-    paper_query, paper_stats_query, category_query, category_stats_query, author_query, author_stats_query = (
-        c.args[0] for c in calls
-    )
-    assert "MERGE (paper:Paper {id: p.id})" in paper_query
-    assert "GraphStats" in paper_stats_query
-    assert "MERGE (c:Category {code: cat})" in category_query
-    assert "GraphStats" in category_stats_query
-    assert "MERGE (a:Author {name: authorName})" in author_query
-    assert "GraphStats" in author_stats_query
+    queries = [call.args[0] for call in mock.call_args_list]
+    assert len(queries) == 6  # three upserts, each followed by its GraphStats apply
+    assert "MERGE (paper:Paper {id: p.id})" in queries[0]
+    assert "MERGE (c:Category {code: cat.code})" in queries[2]
+    assert "MERGE (a:Author {name: authorName})" in queries[4]
+    assert all("GraphStats" in queries[i] for i in (1, 3, 5))
 
-    for query_call in (calls[0], calls[2], calls[4]):
-        papers_param = query_call.kwargs["papers"]
-        assert papers_param[0]["id"] == "2101.00001"
-        assert papers_param[0]["authors"] == ["Jane Doe"]
+
+def test_upsert_papers_passes_categories_as_their_own_param(mocker):
+    """Flattened to a top-level list rather than nested inside `$papers`, which ArcadeDB's
+    Cypher layer handles unreliably."""
+    mock = _mock_run_write(mocker)
+    paper = Paper(arxiv_id="2101.00001", title="T", categories=[arxiv_category("cs.CL")])
+
+    upsert.upsert_papers([paper])
+
+    assert _kwargs_containing(mock, "categories")["categories"][0]["code"] == "arxiv:cs.CL"
+
+
+def test_upsert_papers_skips_the_category_write_when_uncategorized(mocker):
+    mock = _mock_run_write(mocker)
+    upsert.upsert_papers([Paper(arxiv_id="2101.00001", title="T")])
+    assert not any("categories" in call.kwargs for call in mock.call_args_list)
+
+
+def test_upsert_papers_threads_the_stats_delta_into_the_apply_call(mocker):
+    mock = _mock_run_write(mocker, new_papers=1, embedded_delta=1)
+    upsert.upsert_papers([Paper(arxiv_id="2101.00001", title="T")])
+
+    apply_call = mock.call_args_list[1]
+    assert (apply_call.kwargs["new_papers"], apply_call.kwargs["embedded_delta"]) == (1, 1)
 
 
 def test_upsert_papers_noop_on_empty(mocker):
-    mock_run_write = mocker.patch.object(upsert, "run_write")
+    mock = mocker.patch.object(upsert, "run_write")
     upsert.upsert_papers([])
-    mock_run_write.assert_not_called()
+    mock.assert_not_called()
 
 
-def test_upsert_papers_threads_stats_delta_into_apply_call(mocker):
-    """The delta row returned by the paper-upsert query must be passed straight
-    through as params to the GraphStats-apply query, unchanged."""
-    mock_run_write = _mock_run_write(mocker, new_papers=1, upgraded_stubs=0, embedded_delta=1)
-    paper = Paper(arxiv_id="2101.00001", title="Title", abstract="Abstract", authors=[], categories=[])
-
-    upsert.upsert_papers([paper])
-
-    apply_call = mock_run_write.call_args_list[1]
-    assert apply_call.kwargs["new_papers"] == 1
-    assert apply_call.kwargs["embedded_delta"] == 1
+# --- Stubs and citation edges -----------------------------------------------------------
 
 
-def test_upsert_paper_stubs_dedupes(mocker):
+def test_upsert_paper_stubs_dedupes_by_graph_id(mocker):
     _mock_run_write(mocker)
-    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
+    script = _mock_run_script(mocker)
     stubs = [
         CitationStub(arxiv_id="2001.00001", title="A"),
         CitationStub(arxiv_id="2001.00001", title="A duplicate"),
@@ -83,20 +175,50 @@ def test_upsert_paper_stubs_dedupes(mocker):
 
     upsert.upsert_paper_stubs(stubs)
 
-    upsert_call = mock_run_script.call_args_list[0]
-    ids = {s["id"] for s in upsert_call.kwargs["stubs"]}
-    assert ids == {"2001.00001", "s2:s2-9"}
+    assert {s["id"] for s in script.call_args.kwargs["stubs"]} == {"arxiv:2001.00001", "s2:s2-9"}
 
 
-def test_apply_enrichment_builds_edges_and_stubs(mocker):
-    """
-    Verifies that apply_enrichment() correctly processes citation data from
-    Semantic Scholar and calls the database write function with the right params
-    """
-    mock_run_write = _mock_run_write(mocker, citation_count=3)
-    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
+def test_upsert_paper_stubs_carry_every_identifier_column(mocker):
+    _mock_run_write(mocker)
+    script = _mock_run_script(mocker)
+
+    upsert.upsert_paper_stubs([CitationStub(pmid="12345678", title="A PubMed paper")])
+
+    params = script.call_args.kwargs["stubs"][0]
+    assert params["id"] == "pmid:12345678"
+    assert params["pmid"] == "12345678"
+    assert params["arxiv_id"] is None
+
+
+def test_upsert_paper_stubs_noop_on_empty(mocker):
+    mock = mocker.patch.object(upsert, "run_write")
+    upsert.upsert_paper_stubs([])
+    mock.assert_not_called()
+
+
+def test_upsert_citation_edges_dedupes(mocker):
+    _mock_run_write(mocker)
+    script = _mock_run_script(mocker)
+
+    upsert.upsert_citation_edges([("arxiv:a", "arxiv:b"), ("arxiv:a", "arxiv:b")])
+
+    assert script.call_args.kwargs["edges"] == [{"citing_id": "arxiv:a", "cited_id": "arxiv:b"}]
+
+
+def test_upsert_citation_edges_noop_on_empty(mocker):
+    mock = mocker.patch.object(upsert, "run_write")
+    upsert.upsert_citation_edges([])
+    mock.assert_not_called()
+
+
+# --- Enrichment -------------------------------------------------------------------------
+
+
+def test_apply_enrichment_builds_stubs_and_edges_in_both_directions(mocker):
+    mock_write = _mock_run_write(mocker)
+    script = _mock_run_script(mocker)
     result = EnrichmentResult(
-        paper_id="2101.00001",
+        paper_id="arxiv:2101.00001",
         s2_paper_id="s2-1",
         citation_count=3,
         references=[CitationStub(arxiv_id="2001.00001", title="Ref")],
@@ -105,59 +227,60 @@ def test_apply_enrichment_builds_edges_and_stubs(mocker):
 
     upsert.apply_enrichment([result])
 
-    # Stub/edge upserts go over arcadedb_http.run_script (SQL) now; only the
-    # GraphStats-apply and enrichment-fields writes still go through run_write (Cypher).
-    script_calls = mock_run_script.call_args_list
-    stub_call = next(c for c in script_calls if "stubs" in c.kwargs)
-    edge_call = next(c for c in script_calls if "edges" in c.kwargs)
-    enrichment_call = next(c for c in mock_run_write.call_args_list if "results" in c.kwargs)
+    stub_ids = {s["id"] for s in _kwargs_containing(script, "stubs")["stubs"]}
+    assert stub_ids == {"arxiv:2001.00001", "s2:s2-2"}
 
-    # Check that stubs are created for both papers "2001.00001" and "s2-2"
-    stub_ids = {s["id"] for s in stub_call.kwargs["stubs"]}
-    assert stub_ids == {"2001.00001", "s2:s2-2"}
+    edges = {(e["citing_id"], e["cited_id"]) for e in _kwargs_containing(script, "edges")["edges"]}
+    assert edges == {("arxiv:2101.00001", "arxiv:2001.00001"), ("s2:s2-2", "arxiv:2101.00001")}
 
-    # Check that edges exist: 2101 -> 2001 and s2-2 -> 2101
-    edges = {(e["citing_id"], e["cited_id"]) for e in edge_call.kwargs["edges"]}
-    assert ("2101.00001", "2001.00001") in edges
-    assert ("s2:s2-2", "2101.00001") in edges
-
-    # Check that enrichment data (citation count = 3) is persisted
-    assert enrichment_call.kwargs["results"][0]["citation_count"] == 3
+    assert _kwargs_containing(mock_write, "results")["results"][0]["citation_count"] == 3
 
 
 def test_apply_enrichment_noop_on_empty(mocker):
-    mock_run_write = mocker.patch.object(upsert, "run_write")
+    mock = mocker.patch.object(upsert, "run_write")
     upsert.apply_enrichment([])
-    mock_run_write.assert_not_called()
+    mock.assert_not_called()
 
 
-def test_upsert_paper_stubs_includes_pmid(mocker):
-    _mock_run_write(mocker)
-    mock_run_script = mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": 0}])
-    stubs = [CitationStub(pmid="12345678", title="A PubMed paper")]
-
-    upsert.upsert_paper_stubs(stubs)
-
-    stub_params = mock_run_script.call_args_list[0].kwargs["stubs"][0]
-    assert stub_params["id"] == "pmid:12345678"
-    assert stub_params["pmid"] == "12345678"
+# --- Embeddings -------------------------------------------------------------------------
 
 
-def test_set_paper_embeddings_writes_and_bumps_stats(mocker):
-    mock_run_write = mocker.patch.object(upsert, "run_write")
+def test_set_paper_embeddings_writes_vectors_and_bumps_stats(mocker):
+    mock = mocker.patch.object(upsert, "run_write")
     now = datetime(2024, 1, 1, 12, 0, 0)
 
-    upsert.set_paper_embeddings([("2101.00001", [0.1, 0.2])], now)
+    upsert.set_paper_embeddings([("arxiv:2101.00001", [0.1, 0.2])], now)
 
-    embed_call, stats_call = mock_run_write.call_args_list
-    embedding_param = embed_call.kwargs["embeddings"][0]
-    assert embedding_param["id"] == "2101.00001"
-    assert embedding_param["embedding"] == [0.1, 0.2]
-    assert embedding_param["embedded_at"] == now.isoformat()
+    embed_call, stats_call = mock.call_args_list
+    assert embed_call.kwargs["embeddings"] == [
+        {"id": "arxiv:2101.00001", "embedding": [0.1, 0.2], "embedded_at": now.isoformat()}
+    ]
     assert stats_call.kwargs["newly_embedded_count"] == 1
 
 
+def test_set_paper_embeddings_touches_only_embedding_fields():
+    """Reusing upsert_papers here would blank every other field it doesn't reconstruct."""
+    assert "paper.title" not in upsert._SET_EMBEDDINGS
+    assert "paper.embedding" in upsert._SET_EMBEDDINGS
+
+
 def test_set_paper_embeddings_noop_on_empty(mocker):
-    mock_run_write = mocker.patch.object(upsert, "run_write")
+    mock = mocker.patch.object(upsert, "run_write")
     upsert.set_paper_embeddings([], datetime.now())
-    mock_run_write.assert_not_called()
+    mock.assert_not_called()
+
+
+# --- Generated query text ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("namespace", PAPER_IDENTIFIERS, ids=lambda ns: ns.prefix)
+def test_identifier_columns_appear_in_every_write_query(namespace):
+    """The clauses are generated from PAPER_IDENTIFIERS, so a new paper source needs no
+    query edit."""
+    assert f"paper.{namespace.column} = p.{namespace.column}" in upsert._UPSERT_PAPERS
+    assert f"stub.{namespace.column} = s.{namespace.column}" in upsert._UPSERT_STUBS
+    assert f"{namespace.column} = $s.{namespace.column}" in upsert._UPSERT_STUBS_SQL
+
+
+def test_category_upsert_writes_vocabulary_and_name():
+    assert "SET c.vocabulary = cat.vocabulary, c.name = cat.name" in upsert._UPSERT_CATEGORIES

@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 
 from litgraph.ingest._pubmed_xml import iter_pubmed_articles, parse_pubmed_article
-from litgraph.models import Paper
+from litgraph.models import Paper, Source
 
 
 def _open(path: Path):
@@ -37,7 +37,7 @@ def _fields_to_paper(fields: dict) -> Paper:
         doi=fields["doi"],
         journal_ref=fields["journal_ref"],
         comments=fields["comments"],
-        source="pubmed_baseline",
+        source=Source.PUBMED_BASELINE,
     )
 
 
@@ -64,7 +64,7 @@ def iter_pubmed_baseline_papers(
                     continue
 
                 if mesh_term_set and not any(
-                    cat.lower() in mesh_term_set for cat in fields["categories"]
+                    cat.name.lower() in mesh_term_set for cat in fields["categories"]
                 ):
                     continue
 

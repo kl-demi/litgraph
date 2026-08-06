@@ -1,11 +1,15 @@
-"""Shared PubmedArticle XML -> Paper mapping, used by both pubmed_source.py (E-utilities
-efetch responses) and pubmed_baseline_source.py (NCBI baseline/update bulk files) since
-both are the same PubMed XML schema."""
+"""Shared PubmedArticle XML -> Paper mapping.
+
+Used by both pubmed_source.py (E-utilities efetch responses) and
+pubmed_baseline_source.py (NCBI baseline/update bulk files) — same XML schema.
+"""
 
 import io
 from datetime import date
 
 from lxml import etree
+
+from litgraph.models import Category, mesh_heading
 
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -60,19 +64,36 @@ def _parse_ymd(el, base_path: str) -> date | None:
         return None
 
 
-def _mesh_headings(citation_el) -> tuple[list[str], str | None]:
-    headings = []
-    major_headings = []
+def _mesh_headings(citation_el) -> tuple[list[Category], str | None]:
+    """A paper's MeSH subject headings as Category, keyed on the descriptor UI.
+
+    Keyed on UI rather than display text: NLM renames descriptors between
+    releases, and UI matches the `mesh:` Compound namespace on the biology side.
+
+    Prefers major-topic headings (indexer-flagged as what the paper is about,
+    excluding check tags like Humans/Male/Aged) but falls back to all headings
+    when none are flagged major, since roughly a third of PubMed never flags any
+    heading major and dropping them would leave those papers with no category.
+
+    Also what `pubmed_baseline_source --mesh-terms` filters against, so that
+    flag ingests exactly the papers that will carry the term as a category.
+    """
+    headings: list[Category] = []
+    major: list[Category] = []
     for heading_el in citation_el.findall("MeshHeadingList/MeshHeading"):
         descriptor = heading_el.find("DescriptorName")
         if descriptor is None or not descriptor.text:
             continue
-        name = descriptor.text.strip()
-        headings.append(name)
+        ui = (descriptor.get("UI") or "").strip()
+        if not ui:
+            continue
+        heading = mesh_heading(ui, descriptor.text.strip())
+        headings.append(heading)
         if descriptor.get("MajorTopicYN") == "Y":
-            major_headings.append(name)
-    primary = major_headings[0] if major_headings else (headings[0] if headings else None)
-    return headings, primary
+            major.append(heading)
+
+    selected = major or headings
+    return selected, selected[0].code if selected else None
 
 
 def _doi(article_el) -> str | None:

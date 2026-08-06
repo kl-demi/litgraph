@@ -38,11 +38,19 @@ def test_parses_basic_fields(tmp_path):
     assert paper.title == "A Great Paper About Things"
     assert paper.abstract == "This is the abstract."
     assert paper.authors == ["Jane Doe", "John Smith"]
-    assert paper.categories == ["cs.CL", "cs.LG"]
-    assert paper.primary_category == "cs.CL"
+    assert [c.code for c in paper.categories] == ["arxiv:cs.CL", "arxiv:cs.LG"]
+    assert [c.name for c in paper.categories] == ["cs.CL", "cs.LG"]
+    assert paper.primary_category == "arxiv:cs.CL"
     assert paper.published_date == date(2021, 1, 4)
     assert paper.updated_date == date(2021, 2, 1)
     assert paper.source == "kaggle"
+    assert paper.id == "arxiv:2101.00001"
+
+
+def test_category_prefix_filter_matches_bare_codes(tmp_path):
+    """`--categories` takes bare arXiv codes; namespacing happens after the filter."""
+    path = _write_jsonl(tmp_path, [RECORD_CS, RECORD_PHYSICS])
+    assert [p.arxiv_id for p in iter_kaggle_papers(path, categories=["cs.CL"])] == ["2101.00001"]
 
 
 def test_filters_by_category_prefix(tmp_path):

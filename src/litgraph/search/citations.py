@@ -37,7 +37,10 @@ def get_citing_papers(paper_id: str, limit: int = 50) -> list[dict]:
 
 
 def citation_neighborhood(paper_id: str, depth: int = 1, limit: int = 100) -> list[dict]:
-    """Papers within ``depth`` CITES hops of ``paper_id`` (an arXiv id or a PMID), in either direction."""
+    """Papers within ``depth`` CITES hops of ``paper_id``, in either direction.
+
+    ``depth`` is clamped to ``[1, 3]``.
+    """
     depth = max(1, min(int(depth), 3))
     query = f"""
     MATCH (p:Paper) WHERE p.arxiv_id = $paper_id OR p.pmid = $paper_id
@@ -50,4 +53,8 @@ def citation_neighborhood(paper_id: str, depth: int = 1, limit: int = 100) -> li
 
 
 def most_cited(category: str | None = None, limit: int = 20) -> list[dict]:
+    """Most-cited papers, optionally restricted to one category.
+
+    ``category`` must be a fully namespaced code (``arxiv:cs.CL``, ``mesh:D009422``).
+    """
     return run_read(_MOST_CITED, category=category, limit=limit)

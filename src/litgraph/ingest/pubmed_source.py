@@ -8,7 +8,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked, run_read, run_write
 from litgraph.ingest._pubmed_xml import iter_pubmed_articles, parse_pubmed_article
-from litgraph.models import Paper
+from litgraph.models import Paper, Source
 
 _GET_CHECKPOINT = """
 MATCH (s:IngestState {job: $job})
@@ -252,7 +252,7 @@ def _result_to_paper(fields: dict) -> Paper:
         doi=fields["doi"],
         journal_ref=fields["journal_ref"],
         comments=fields["comments"],
-        source="pubmed",
+        source=Source.PUBMED,
         fetched_at=datetime.now(UTC),
     )
 

@@ -329,7 +329,9 @@ def stats_oldest(n: int = typer.Option(10, "--n", help="Number of papers to show
 
 @stats_app.command("most-cited")
 def stats_most_cited(
-    category: str = typer.Option(None, "--category", help="Restrict to a single arXiv category"),
+    category: str = typer.Option(
+        None, "--category", help="Restrict to a single namespaced category, e.g. arxiv:cs.CL or mesh:D009422"
+    ),
 ) -> None:
     """The single most cited paper."""
     from litgraph.search.citations import most_cited

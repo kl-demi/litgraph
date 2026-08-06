@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from datetime import date, datetime
 from pathlib import Path
 
-from litgraph.models import Paper
+from litgraph.models import Paper, Source, arxiv_category
 
 
 def _open(path: Path):
@@ -47,14 +47,14 @@ def _record_to_paper(record: dict) -> Paper:
         title=(record.get("title") or "").replace("\n", " ").strip(),
         abstract=(record.get("abstract") or "").replace("\n", " ").strip(),
         authors=authors,
-        categories=categories,
-        primary_category=categories[0] if categories else None,
+        categories=[arxiv_category(c) for c in categories],
+        primary_category=arxiv_category(categories[0]).code if categories else None,
         published_date=published_date,
         updated_date=_parse_iso_date(record.get("update_date")),
         doi=record.get("doi") or None,
         journal_ref=record.get("journal-ref") or None,
         comments=record.get("comments") or None,
-        source="kaggle",
+        source=Source.KAGGLE,
     )
 
 
