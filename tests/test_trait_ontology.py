@@ -115,8 +115,7 @@ def test_ensure_to_obo_file_downloads_when_missing(tmp_path, mocker):
 
 
 def test_upsert_traits_writes_params(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
-    mock_run_write.return_value = [{"new_traits": 2}]
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes", return_value=2)
 
     new_count = upsert_traits(
         [
@@ -126,14 +125,13 @@ def test_upsert_traits_writes_params(mocker):
     )
 
     assert new_count == 2
-    assert mock_run_write.call_args.kwargs["traits"][0] == {
-        "trait_id": "TO:0000276",
-        "name": "drought tolerance",
-        "source_db": "TO",
-    }
+    node_type, rows = mock_nodes.call_args.args
+    assert node_type == "Trait"
+    assert rows[0] == {"trait_id": "TO:0000276", "name": "drought tolerance", "source_db": "TO"}
+    assert mock_nodes.call_args.kwargs["update_existing"] is True
 
 
 def test_upsert_traits_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes", return_value=0)
     assert upsert_traits([]) == 0
-    mock_run_write.assert_not_called()
+    assert mock_nodes.call_args.args[1] == []

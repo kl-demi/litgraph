@@ -44,6 +44,12 @@ class NodeType:
 
     ``key`` is the unique-indexed natural key: an identifier from an external source,
     not a synthetic id.
+
+    ``bootstrappable`` is whether an edge upsert may create this node key-only when
+    absent. True only if (a) ids are validated upstream (crosswalk/NER normalization)
+    before reaching a writer, and (b) a key-only node is complete -- every other property
+    is optional enrichment. Ontology terms fail both: the graph lookup is their only id
+    validation, and their loader never fills in an obsolete term.
     """
 
     name: str
@@ -53,6 +59,7 @@ class NodeType:
     fulltext: tuple[str, ...] = ()  # Properties in a combined full-text index, if any.
     vector: str | None = None  # Embedding vector property, if any. Dimensions come from
     # settings at emit time, not here, since they follow the embedding model.
+    bootstrappable: bool = False
 
     def all_props(self) -> Iterator[Prop]:
         """Every property needing a declaration, key first."""
@@ -131,12 +138,15 @@ def arcadedb_ddl(reg: Registry, embedding_dimensions: int) -> Iterator[str]:
         yield f"CREATE EDGE TYPE {edge.name} IF NOT EXISTS"
 
     for node in reg.nodes.values():
+        declared = set()
         for prop in node.all_props():
+            declared.add(prop.name)
             yield f"CREATE PROPERTY {node.name}.{prop.name} {prop.type.value}"
-        # Full-text/vector properties need declaring too; they aren't otherwise in `props`.
+        # Full-text/vector properties need declaring too when `props` doesn't already.
         for prop_name in node.fulltext:
-            yield f"CREATE PROPERTY {node.name}.{prop_name} {PropType.STRING.value}"
-        if node.vector:
+            if prop_name not in declared:
+                yield f"CREATE PROPERTY {node.name}.{prop_name} {PropType.STRING.value}"
+        if node.vector and node.vector not in declared:
             yield f"CREATE PROPERTY {node.name}.{node.vector} {PropType.FLOAT_ARRAY.value}"
 
     for edge in reg.edges.values():

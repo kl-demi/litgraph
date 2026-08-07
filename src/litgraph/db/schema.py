@@ -1,4 +1,4 @@
-"""Core paper-graph types, declared into the shared schema registry."""
+"""Paper-related node/edge types."""
 
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
@@ -14,6 +14,8 @@ PAPER = NodeType(
     key="id",
     props=(
         *_IDENTIFIER_PROPS,
+        Prop("title"),
+        Prop("abstract"),
         Prop("enriched_at", PropType.DATETIME, indexed=True),
         Prop("is_stub", PropType.BOOLEAN, indexed=True),
     ),

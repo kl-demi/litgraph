@@ -4,6 +4,7 @@ from spokebio.ingest.reactome import (
     extract_participates_in,
     extract_produces,
 )
+from litgraph.graph.writer import CreateMissing
 from spokebio.models import ParticipatesIn, Pathway, Produces
 from spokebio.upsert import upsert_participates_in, upsert_pathways, upsert_produces
 
@@ -111,26 +112,25 @@ def test_extract_produces_dedupes_to_one_edge_per_pair(tmp_path):
 
 
 def test_upsert_produces_writes_params(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
-    mock_run_write.return_value = [{"new_edges": 1}]
+    """Bootstraps the Compound, whose mesh: id the crosswalk already resolved, but requires
+    the Pathway to exist."""
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
 
     new_count = upsert_produces(
         [Produces(compound_id="mesh:D009569", pathway_id="R-HSA-1237112", evidence_code="TAS")]
     )
 
     assert new_count == 1
-    call = mock_run_write.call_args
-    assert call.kwargs["edges"][0] == {
-        "pathway_id": "R-HSA-1237112",
-        "compound_id": "mesh:D009569",
-        "evidence_code": "TAS",
-    }
+    edge_type, rows = mock_edges.call_args.args
+    assert edge_type == "PRODUCES"
+    assert rows[0] == {"src": "R-HSA-1237112", "dst": "mesh:D009569", "evidence_code": "TAS"}
+    assert mock_edges.call_args.kwargs["create_missing"] is CreateMissing.DST
 
 
 def test_upsert_produces_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=0)
     assert upsert_produces([]) == 0
-    mock_run_write.assert_not_called()
+    assert mock_edges.call_args.args[1] == []
 
 
 def test_ensure_reactome_file_skips_download_if_already_cached(tmp_path, mocker):
@@ -169,33 +169,31 @@ def test_ensure_reactome_file_downloads_when_missing(tmp_path, mocker):
 
 
 def test_upsert_pathways_still_works_for_reactome_source(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
-    mock_run_write.return_value = [{"new_pathways": 1}]
+    """GO and Reactome share one Pathway type and key, told apart by source_db."""
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
 
     upsert_pathways([Pathway(pathway_id="R-HSA-164843", name="2-LTR circle formation", source_db="Reactome")])
 
-    call = mock_run_write.call_args
-    assert call.kwargs["pathways"][0]["source_db"] == "Reactome"
+    assert mock_nodes.call_args.args[1][0]["source_db"] == "Reactome"
 
 
 def test_upsert_participates_in_writes_params(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
-    mock_run_write.return_value = [{"new_edges": 1}]
+    """Bootstraps the Gene, since most annotated genes have no node until literature names
+    one, but requires the Pathway to exist."""
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
 
     new_count = upsert_participates_in(
         [ParticipatesIn(gene_id="ncbigene:7157", pathway_id="R-HSA-111448", evidence_code="TAS")]
     )
 
     assert new_count == 1
-    call = mock_run_write.call_args
-    assert call.kwargs["edges"][0] == {
-        "gene_id": "ncbigene:7157",
-        "pathway_id": "R-HSA-111448",
-        "evidence_code": "TAS",
-    }
+    edge_type, rows = mock_edges.call_args.args
+    assert edge_type == "PARTICIPATES_IN"
+    assert rows[0] == {"src": "ncbigene:7157", "dst": "R-HSA-111448", "evidence_code": "TAS"}
+    assert mock_edges.call_args.kwargs["create_missing"] is CreateMissing.SRC
 
 
 def test_upsert_participates_in_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=0)
     assert upsert_participates_in([]) == 0
-    mock_run_write.assert_not_called()
+    assert mock_edges.call_args.args[1] == []

@@ -1,26 +1,35 @@
-from litgraph.config import get_settings
-from litgraph.db import arcadedb_http
-from litgraph.db.neo4j_client import run_write
-from litgraph.models import CitationStub, EnrichmentResult, Paper
+"""Paper-graph writes: papers, categories, authors, citation stubs/edges, enrichment.
 
-# Each upsert also returns the deltas needed to keep the GraphStats singleton (see
-# _apply_paper_stats etc.) in sync, so `stats overview` never has to full-scan the
-# graph. Deltas are computed by comparing a property's value before/after this same
-# write, via `MERGE ... ON CREATE SET x._is_new = true` sentinels (removed before
-# returning) — this is idempotent under re-ingestion of already-upserted papers,
-# unlike a naive "+= len(batch)" counter would be.
-_UPSERT_PAPERS = """
+Exports:
+    upsert_papers: full Paper nodes plus Category/Author nodes and their edges.
+    upsert_paper_stubs / upsert_citation_edges: the citation graph around known papers.
+    apply_enrichment: Semantic Scholar citation counts, stubs, and CITES edges.
+    set_paper_embeddings: embedding backfill that touches no other Paper field.
+
+Usage: ingest/pipeline.py calls these per batch. Every write is idempotent, and each
+returns GraphStats deltas so `stats overview` never has to scan the graph.
+"""
+
+from litgraph.db.neo4j_client import run_write
+from litgraph.graph.writer import CreateMissing, upsert_edges, upsert_nodes
+from litgraph.models import PAPER_IDENTIFIERS, CitationStub, EnrichmentResult, Paper, identifier_columns
+
+# `SET paper.arxiv_id = p.arxiv_id, ...`, one line per registered identifier namespace, so
+# adding a paper source doesn't mean editing the query text.
+_IDENTIFIER_SET_CLAUSE = ",\n    ".join(f"paper.{ns.column} = p.{ns.column}" for ns in PAPER_IDENTIFIERS)
+
+# Returns GraphStats deltas computed via `ON CREATE SET x._is_new = true` sentinels
+# (removed before returning), so re-ingesting the same papers doesn't inflate counters.
+_UPSERT_PAPERS = f"""
 UNWIND $papers AS p
-MERGE (paper:Paper {id: p.id})
+MERGE (paper:Paper {{id: p.id}})
 ON CREATE SET paper._is_new = true
 WITH paper, p,
      coalesce(paper._is_new, false) AS is_new,
      coalesce(paper.is_stub, false) AS was_stub,
      paper.embedding IS NOT NULL AS was_embedded
 REMOVE paper._is_new
-SET paper.arxiv_id = p.arxiv_id,
-    paper.pmid = p.pmid,
-    paper.s2_paper_id = p.s2_paper_id,
+SET {_IDENTIFIER_SET_CLAUSE},
     paper.title = p.title,
     paper.abstract = p.abstract,
     paper.categories = p.categories,
@@ -60,20 +69,19 @@ SET g.papers = coalesce(g.papers, 0) + $new_papers,
         ELSE g.latest_published END
 """
 
-# Separate top-level UNWIND $papers per relationship type, rather than nesting a
-# FOREACH inside the paper-upsert query: ArcadeDB's Bolt/Cypher layer doesn't honor
-# MERGE's match-or-create semantics for a pattern variable bound inside a FOREACH —
-# `MERGE (a:Author {name: x}) MERGE (a)-[:AUTHORED]->(paper)` inside FOREACH always
-# creates a fresh blank vertex for `a` instead of reusing the matched/created Author,
-# so edges ended up pointing at untyped, propertyless orphan vertices.
+# Takes a pre-flattened top-level `$categories` list ({paper_id, code, vocabulary, name})
+# because ArcadeDB's Cypher layer mishandles both nested list params and MERGE inside
+# FOREACH (the latter creates blank orphan vertices).
+# `vocabulary`/`name` are derived from the code and written by nothing else, so SETting
+# them unconditionally is safe and self-heals nodes from older ingestions.
 _UPSERT_CATEGORIES = """
-UNWIND $papers AS p
-UNWIND p.categories AS cat
-MATCH (paper:Paper {id: p.id})
-MERGE (c:Category {code: cat})
+UNWIND $categories AS cat
+MATCH (paper:Paper {id: cat.paper_id})
+MERGE (c:Category {code: cat.code})
 ON CREATE SET c._is_new = true
-WITH paper, c, coalesce(c._is_new, false) AS new_category
+WITH paper, c, cat, coalesce(c._is_new, false) AS new_category
 REMOVE c._is_new
+SET c.vocabulary = cat.vocabulary, c.name = cat.name
 MERGE (paper)-[edge:IN_CATEGORY]->(c)
 ON CREATE SET edge._is_new = true
 WITH c, new_category, coalesce(edge._is_new, false) AS new_edge
@@ -111,85 +119,14 @@ SET g.authors = coalesce(g.authors, 0) + $new_authors,
     g.authored_edges = coalesce(g.authored_edges, 0) + $new_edges
 """
 
-_UPSERT_STUBS = """
-UNWIND $stubs AS s
-MERGE (stub:Paper {id: s.id})
-ON CREATE SET stub.is_stub = true,
-              stub.title = s.title,
-              stub.arxiv_id = s.arxiv_id,
-              stub.pmid = s.pmid,
-              stub.s2_paper_id = s.s2_paper_id,
-              stub._is_new = true
-WITH stub, coalesce(stub._is_new, false) AS is_new
-REMOVE stub._is_new
-RETURN count(CASE WHEN is_new THEN 1 END) AS new_stubs
-"""
-
 _APPLY_STUB_STATS = """
 MERGE (g:GraphStats {id: 'singleton'})
 SET g.stubs = coalesce(g.stubs, 0) + $new_stubs
 """
 
-# ArcadeDB equivalents of _UPSERT_STUBS/_UPSERT_CITATION_EDGES below, over the SQL/HTTP
-# API instead of Cypher/Bolt -- a batch of a few thousand MERGEs over Cypher/Bolt was
-# measured taking 100s+ (see enrich-performance investigation), consistent with the
-# ~100x Cypher-vs-SQL gap already documented in search/stats.py's _rebuild_edge_counts.
-# Plain `UPDATE ... UPSERT` can't be used for either: it would unconditionally overwrite
-# fields (incl. is_stub) on a match, which would corrupt an already-fully-ingested Paper
-# that happens to also be a citation stub target -- so both need an explicit
-# exists-check per row, which requires the `sqlscript` language (FOREACH/IF/LET), not
-# single-statement SQL.
-_UPSERT_STUBS_SQL = """
-BEGIN;
-LET stubs = :stubs;
-LET newCount = 0;
-FOREACH ($s IN $stubs) {
-  LET existing = SELECT FROM Paper WHERE id = $s.id;
-  IF ($existing.size() = 0) {
-    INSERT INTO Paper SET id = $s.id, is_stub = true, title = $s.title,
-                          arxiv_id = $s.arxiv_id, pmid = $s.pmid, s2_paper_id = $s.s2_paper_id;
-    LET newCount = $newCount + 1;
-  }
-}
-COMMIT;
-RETURN $newCount;
-"""
-
-_UPSERT_CITATION_EDGES = """
-UNWIND $edges AS e
-MATCH (citing:Paper {id: e.citing_id})
-MATCH (cited:Paper {id: e.cited_id})
-MERGE (citing)-[edge:CITES]->(cited)
-ON CREATE SET edge._is_new = true
-WITH edge, coalesce(edge._is_new, false) AS is_new
-REMOVE edge._is_new
-RETURN count(CASE WHEN is_new THEN 1 END) AS new_edges
-"""
-
 _APPLY_CITATION_EDGE_STATS = """
 MERGE (g:GraphStats {id: 'singleton'})
 SET g.citation_edges = coalesce(g.citation_edges, 0) + $new_edges
-"""
-
-_UPSERT_CITATION_EDGES_SQL = """
-BEGIN;
-LET edges = :edges;
-LET newCount = 0;
-FOREACH ($e IN $edges) {
-  LET citingRows = SELECT FROM Paper WHERE id = $e.citing_id;
-  LET citedRows = SELECT FROM Paper WHERE id = $e.cited_id;
-  IF ($citingRows.size() > 0 AND $citedRows.size() > 0) {
-    LET citingRid = $citingRows[0].@rid;
-    LET citedRid = $citedRows[0].@rid;
-    LET existingEdges = SELECT FROM CITES WHERE @out = $citingRid AND @in = $citedRid;
-    IF ($existingEdges.size() = 0) {
-      CREATE EDGE CITES FROM $citingRid TO $citedRid;
-      LET newCount = $newCount + 1;
-    }
-  }
-}
-COMMIT;
-RETURN $newCount;
 """
 
 _UPDATE_ENRICHMENT = """
@@ -209,10 +146,8 @@ MERGE (g:GraphStats {id: 'singleton'})
 SET g.enriched = coalesce(g.enriched, 0) + $newly_enriched_count
 """
 
-# Deliberately touches only embedding/embedded_at, unlike upsert_papers() which SETs
-# every Paper field unconditionally -- reusing upsert_papers() here to backfill a missing
-# embedding would require reconstructing every other field first, or risk silently
-# clobbering them back to blank (the exact bug backfill_authors.py caused previously).
+# Touches only embedding/embedded_at -- backfilling via upsert_papers() would blank every
+# Paper field it can't reconstruct (the bug backfill_authors.py once caused).
 _SET_EMBEDDINGS = """
 UNWIND $embeddings AS e
 MATCH (paper:Paper {id: e.id})
@@ -228,24 +163,47 @@ SET g.embedded = coalesce(g.embedded, 0) + $newly_embedded_count
 def _paper_params(paper: Paper) -> dict:
     return {
         "id": paper.id,
-        "arxiv_id": paper.arxiv_id,
-        "pmid": paper.pmid,
-        "s2_paper_id": paper.s2_paper_id,
+        **dict(identifier_columns(paper.identifiers)),
         "title": paper.title,
         "abstract": paper.abstract,
-        "categories": paper.categories,
+        # Flat namespaced codes, so `$category IN p.categories` works; vocabulary and
+        # display name live on the Category node.
+        "categories": paper.category_codes(),
         "primary_category": paper.primary_category,
         "published_date": paper.published_date.isoformat() if paper.published_date else None,
         "updated_date": paper.updated_date.isoformat() if paper.updated_date else None,
         "doi": paper.doi,
         "journal_ref": paper.journal_ref,
         "comments": paper.comments,
-        "source": paper.source,
+        # .value: the Bolt driver would otherwise send an enum object, not the string.
+        "source": paper.source.value,
         "embedding": paper.embedding,
         "fetched_at": paper.fetched_at.isoformat() if paper.fetched_at else None,
         "embedded_at": paper.embedded_at.isoformat() if paper.embedded_at else None,
         "authors": paper.authors,
     }
+
+
+def _category_params(papers: list[Paper]) -> list[dict]:
+    """One flat row per (paper, category) pair, deduped -- a paper listing the same code
+    twice would otherwise inflate Category.paper_count on first write."""
+    seen: set[tuple[str, str]] = set()
+    rows: list[dict] = []
+    for paper in papers:
+        for category in paper.categories:
+            key = (paper.id, category.code)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "paper_id": paper.id,
+                    "code": category.code,
+                    "vocabulary": category.vocabulary.value,
+                    "name": category.name,
+                }
+            )
+    return rows
 
 
 def upsert_papers(papers: list[Paper]) -> None:
@@ -256,43 +214,42 @@ def upsert_papers(papers: list[Paper]) -> None:
     paper_delta = run_write(_UPSERT_PAPERS, papers=params)[0]
     run_write(_APPLY_PAPER_STATS, **paper_delta)
 
-    category_delta = run_write(_UPSERT_CATEGORIES, papers=params)[0]
-    run_write(_APPLY_CATEGORY_STATS, **category_delta)
+    category_rows = _category_params(papers)
+    if category_rows:
+        category_delta = run_write(_UPSERT_CATEGORIES, categories=category_rows)[0]
+        run_write(_APPLY_CATEGORY_STATS, **category_delta)
 
     author_delta = run_write(_UPSERT_AUTHORS, papers=params)[0]
     run_write(_APPLY_AUTHOR_STATS, **author_delta)
 
 
 def upsert_paper_stubs(stubs: list[CitationStub]) -> None:
+    """Upsert minimal Paper nodes for citation endpoints not yet ingested.
+
+    Never updates on match: a stub target that is already a fully-ingested Paper would
+    otherwise have its fields blanked and `is_stub` flipped back to true.
+    """
     if not stubs:
         return
     deduped: dict[str, CitationStub] = {s.id: s for s in stubs}
-    stub_params = [
-        {
-            "id": s.id,
-            "title": s.title,
-            "arxiv_id": s.arxiv_id,
-            "pmid": s.pmid,
-            "s2_paper_id": s.s2_paper_id,
-        }
+    rows = [
+        {"id": s.id, "title": s.title, "is_stub": True, **dict(identifier_columns(s.identifiers))}
         for s in deduped.values()
     ]
-    if get_settings().graph_backend == "arcadedb":
-        new_stubs = arcadedb_http.run_script(_UPSERT_STUBS_SQL, stubs=stub_params)[0]["value"]
-    else:
-        new_stubs = run_write(_UPSERT_STUBS, stubs=stub_params)[0]["new_stubs"]
+    new_stubs = upsert_nodes("Paper", rows, update_existing=False)
     run_write(_APPLY_STUB_STATS, new_stubs=new_stubs)
 
 
 def upsert_citation_edges(edges: list[tuple[str, str]]) -> None:
+    """Upsert CITES edges between papers already in the graph.
+
+    Neither endpoint is bootstrapped -- `upsert_paper_stubs` runs first and is what creates
+    a missing one, with its title and identifiers attached.
+    """
     if not edges:
         return
-    deduped = {(c, t) for c, t in edges}
-    edge_params = [{"citing_id": c, "cited_id": t} for c, t in deduped]
-    if get_settings().graph_backend == "arcadedb":
-        new_edges = arcadedb_http.run_script(_UPSERT_CITATION_EDGES_SQL, edges=edge_params)[0]["value"]
-    else:
-        new_edges = run_write(_UPSERT_CITATION_EDGES, edges=edge_params)[0]["new_edges"]
+    rows = [{"src": citing, "dst": cited} for citing, cited in {(c, t) for c, t in edges}]
+    new_edges = upsert_edges("CITES", rows, create_missing=CreateMissing.NONE, update_existing=False)
     run_write(_APPLY_CITATION_EDGE_STATS, new_edges=new_edges)
 
 

@@ -3,6 +3,7 @@ from datetime import datetime
 import pytest
 
 from litgraph.graph import upsert
+from litgraph.graph.writer import CreateMissing
 from litgraph.models import PAPER_IDENTIFIERS, CitationStub, EnrichmentResult, Paper, arxiv_category, mesh_heading
 
 _STATS_DELTA_KEYS = (
@@ -26,10 +27,6 @@ def _mock_run_write(mocker, **overrides):
     mock = mocker.patch.object(upsert, "run_write")
     mock.return_value = [row]
     return mock
-
-
-def _mock_run_script(mocker, value=0):
-    return mocker.patch.object(upsert.arcadedb_http, "run_script", return_value=[{"value": value}])
 
 
 def _kwargs_containing(mock, key):
@@ -165,8 +162,8 @@ def test_upsert_papers_noop_on_empty(mocker):
 
 
 def test_upsert_paper_stubs_dedupes_by_graph_id(mocker):
-    _mock_run_write(mocker)
-    script = _mock_run_script(mocker)
+    mock_write = _mock_run_write(mocker)
+    nodes = mocker.patch.object(upsert, "upsert_nodes", return_value=0)
     stubs = [
         CitationStub(arxiv_id="2001.00001", title="A"),
         CitationStub(arxiv_id="2001.00001", title="A duplicate"),
@@ -175,19 +172,33 @@ def test_upsert_paper_stubs_dedupes_by_graph_id(mocker):
 
     upsert.upsert_paper_stubs(stubs)
 
-    assert {s["id"] for s in script.call_args.kwargs["stubs"]} == {"arxiv:2001.00001", "s2:s2-9"}
+    assert {row["id"] for row in nodes.call_args.args[1]} == {"arxiv:2001.00001", "s2:s2-9"}
+    assert mock_write.call_args.kwargs["new_stubs"] == 0
+
+
+def test_upsert_paper_stubs_never_update_an_existing_paper(mocker):
+    """A stub target that is already fully ingested would otherwise have its fields blanked
+    and is_stub flipped back to true."""
+    _mock_run_write(mocker)
+    nodes = mocker.patch.object(upsert, "upsert_nodes", return_value=0)
+
+    upsert.upsert_paper_stubs([CitationStub(arxiv_id="2001.00001", title="A")])
+
+    assert nodes.call_args.kwargs["update_existing"] is False
+    assert nodes.call_args.args[0] == "Paper"
 
 
 def test_upsert_paper_stubs_carry_every_identifier_column(mocker):
     _mock_run_write(mocker)
-    script = _mock_run_script(mocker)
+    nodes = mocker.patch.object(upsert, "upsert_nodes", return_value=0)
 
     upsert.upsert_paper_stubs([CitationStub(pmid="12345678", title="A PubMed paper")])
 
-    params = script.call_args.kwargs["stubs"][0]
-    assert params["id"] == "pmid:12345678"
-    assert params["pmid"] == "12345678"
-    assert params["arxiv_id"] is None
+    row = nodes.call_args.args[1][0]
+    assert row["id"] == "pmid:12345678"
+    assert row["pmid"] == "12345678"
+    assert row["arxiv_id"] is None
+    assert row["is_stub"] is True
 
 
 def test_upsert_paper_stubs_noop_on_empty(mocker):
@@ -198,11 +209,23 @@ def test_upsert_paper_stubs_noop_on_empty(mocker):
 
 def test_upsert_citation_edges_dedupes(mocker):
     _mock_run_write(mocker)
-    script = _mock_run_script(mocker)
+    edges = mocker.patch.object(upsert, "upsert_edges", return_value=0)
 
     upsert.upsert_citation_edges([("arxiv:a", "arxiv:b"), ("arxiv:a", "arxiv:b")])
 
-    assert script.call_args.kwargs["edges"] == [{"citing_id": "arxiv:a", "cited_id": "arxiv:b"}]
+    assert edges.call_args.args[1] == [{"src": "arxiv:a", "dst": "arxiv:b"}]
+
+
+def test_upsert_citation_edges_require_both_papers_to_exist(mocker):
+    """upsert_paper_stubs runs first and is what creates a missing endpoint, with its title
+    and identifiers attached."""
+    _mock_run_write(mocker)
+    edges = mocker.patch.object(upsert, "upsert_edges", return_value=0)
+
+    upsert.upsert_citation_edges([("arxiv:a", "arxiv:b")])
+
+    assert edges.call_args.kwargs["create_missing"] is CreateMissing.NONE
+    assert edges.call_args.args[0] == "CITES"
 
 
 def test_upsert_citation_edges_noop_on_empty(mocker):
@@ -216,7 +239,8 @@ def test_upsert_citation_edges_noop_on_empty(mocker):
 
 def test_apply_enrichment_builds_stubs_and_edges_in_both_directions(mocker):
     mock_write = _mock_run_write(mocker)
-    script = _mock_run_script(mocker)
+    nodes = mocker.patch.object(upsert, "upsert_nodes", return_value=0)
+    edges = mocker.patch.object(upsert, "upsert_edges", return_value=0)
     result = EnrichmentResult(
         paper_id="arxiv:2101.00001",
         s2_paper_id="s2-1",
@@ -227,12 +251,11 @@ def test_apply_enrichment_builds_stubs_and_edges_in_both_directions(mocker):
 
     upsert.apply_enrichment([result])
 
-    stub_ids = {s["id"] for s in _kwargs_containing(script, "stubs")["stubs"]}
-    assert stub_ids == {"arxiv:2001.00001", "s2:s2-2"}
-
-    edges = {(e["citing_id"], e["cited_id"]) for e in _kwargs_containing(script, "edges")["edges"]}
-    assert edges == {("arxiv:2101.00001", "arxiv:2001.00001"), ("s2:s2-2", "arxiv:2101.00001")}
-
+    assert {row["id"] for row in nodes.call_args.args[1]} == {"arxiv:2001.00001", "s2:s2-2"}
+    assert {(row["src"], row["dst"]) for row in edges.call_args.args[1]} == {
+        ("arxiv:2101.00001", "arxiv:2001.00001"),
+        ("s2:s2-2", "arxiv:2101.00001"),
+    }
     assert _kwargs_containing(mock_write, "results")["results"][0]["citation_count"] == 3
 
 
@@ -274,12 +297,9 @@ def test_set_paper_embeddings_noop_on_empty(mocker):
 
 
 @pytest.mark.parametrize("namespace", PAPER_IDENTIFIERS, ids=lambda ns: ns.prefix)
-def test_identifier_columns_appear_in_every_write_query(namespace):
-    """The clauses are generated from PAPER_IDENTIFIERS, so a new paper source needs no
-    query edit."""
+def test_identifier_columns_appear_in_the_paper_upsert(namespace):
+    """Generated from PAPER_IDENTIFIERS, so a new paper source needs no query edit."""
     assert f"paper.{namespace.column} = p.{namespace.column}" in upsert._UPSERT_PAPERS
-    assert f"stub.{namespace.column} = s.{namespace.column}" in upsert._UPSERT_STUBS
-    assert f"{namespace.column} = $s.{namespace.column}" in upsert._UPSERT_STUBS_SQL
 
 
 def test_category_upsert_writes_vocabulary_and_name():

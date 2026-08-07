@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from spokebio.ingest.pubtator import PubTatorClient, extract_mentions
+from litgraph.graph.writer import CreateMissing
 from spokebio.models import EntityMention
 from spokebio.upsert import mark_papers_checked, upsert_mentions
 
@@ -104,18 +105,18 @@ def test_fetch_mentions_silently_skips_pmids_pubtator_has_no_doc_for(mocker):
 
 
 def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
-    mock_run_script = mocker.patch("spokebio.upsert.arcadedb_http.run_script")
-    mock_run_script.return_value = [{"value": 1}]
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
     mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
 
-    paper_mentions = {
-        "pmid:111": [
-            EntityMention(vertex_type="Gene", entity_id="ncbigene:27161", name="AGO2"),
-            EntityMention(vertex_type="Organism", entity_id="9606", name="human"),
-        ]
-    }
-
-    stats = upsert_mentions(paper_mentions)
+    stats = upsert_mentions(
+        {
+            "pmid:111": [
+                EntityMention(vertex_type="Gene", entity_id="ncbigene:27161", name="AGO2"),
+                EntityMention(vertex_type="Organism", entity_id="9606", name="human"),
+            ]
+        }
+    )
 
     assert stats == {
         "new_organisms": 1,
@@ -124,15 +125,63 @@ def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
         "new_mention_edges": 2,
         "genes_named": 0,
     }
-    # 2 entity-upsert calls (Gene, Organism) + 2 edge-upsert calls -- Compound has no
-    # mentions this batch, so it's skipped entirely rather than issuing an empty call.
-    assert mock_run_script.call_count == 4
+    # Compound has no mentions this batch, so it's skipped rather than issuing an empty call.
+    assert [call.args[0] for call in mock_nodes.call_args_list] == ["Organism", "Gene"]
+    assert [call.kwargs["dst"] for call in mock_edges.call_args_list] == ["Organism", "Gene"]
+
+
+def test_upsert_mentions_never_overwrites_an_entity_name(mocker):
+    """Another job may have named the node better, so an entity is only written on insert."""
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
+    mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
+
+    upsert_mentions({"pmid:111": [EntityMention(vertex_type="Gene", entity_id="ncbigene:1", name="A")]})
+
+    assert mock_nodes.call_args.kwargs["update_existing"] is False
+
+
+def test_upsert_mentions_requires_both_endpoints_to_exist(mocker):
+    """A paper missing from the graph isn't one this pass should invent."""
+    mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
+    mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
+
+    upsert_mentions({"pmid:111": [EntityMention(vertex_type="Gene", entity_id="ncbigene:1", name="A")]})
+
+    assert mock_edges.call_args.kwargs["create_missing"] is CreateMissing.NONE
+
+
+def test_upsert_mentions_stamps_the_extractor_on_new_edges(mocker):
+    """Set on creation only, so whichever extractor found a mention first keeps it."""
+    mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
+    mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
+
+    upsert_mentions(
+        {"pmid:111": [EntityMention(vertex_type="Gene", entity_id="ncbigene:1", name="A")]},
+        source="oryzabase-gazetteer",
+    )
+
+    assert mock_edges.call_args.args[1][0]["source"] == "oryzabase-gazetteer"
+    assert mock_edges.call_args.kwargs["update_existing"] is False
+
+
+def test_upsert_mentions_omits_source_when_unset(mocker):
+    mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
+    mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 0}])
+
+    upsert_mentions({"pmid:111": [EntityMention(vertex_type="Gene", entity_id="ncbigene:1", name="A")]})
+
+    assert "source" not in mock_edges.call_args.args[1][0]
 
 
 def test_upsert_mentions_names_genes_the_pathway_loaders_left_bare(mocker):
-    """_upsert_entities_sql writes `name` only on INSERT, so a Gene the GAF or Oryzabase
-    loader created key-only would keep a null name forever even once a paper names it."""
-    mocker.patch("spokebio.upsert.arcadedb_http.run_script", return_value=[{"value": 1}])
+    """Entity upserts write `name` only on insert, so a Gene the GAF or Oryzabase loader
+    created key-only would keep a null name forever once a paper names it."""
+    mocker.patch("spokebio.upsert.upsert_nodes", return_value=1)
+    mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
     mock_run_write = mocker.patch("spokebio.upsert.run_write", return_value=[{"named": 1}])
 
     stats = upsert_mentions(
@@ -152,10 +201,16 @@ def test_upsert_mentions_names_genes_the_pathway_loaders_left_bare(mocker):
 
 
 def test_upsert_mentions_noop_on_empty(mocker):
-    mock_run_script = mocker.patch("spokebio.upsert.arcadedb_http.run_script")
+    mock_nodes = mocker.patch("spokebio.upsert.upsert_nodes")
     stats = upsert_mentions({})
-    mock_run_script.assert_not_called()
-    assert stats == {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0}
+    mock_nodes.assert_not_called()
+    assert stats == {
+        "new_organisms": 0,
+        "new_genes": 0,
+        "new_compounds": 0,
+        "new_mention_edges": 0,
+        "genes_named": 0,
+    }
 
 
 def test_mark_papers_checked_writes_merge(mocker):

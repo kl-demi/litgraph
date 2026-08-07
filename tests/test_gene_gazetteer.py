@@ -384,16 +384,16 @@ def test_find_genes_by_locus_id_noop_on_empty(mocker):
     mock_run_read.assert_not_called()
 
 
-def test_secondary_key_index_is_notunique(mocker):
-    """A UNIQUE index would reject the 103 rice locus ids that map to more than one gene."""
-    from spokebio import schema_ext
+def test_secondary_key_index_is_notunique():
+    """A UNIQUE index would reject the 103 rice locus ids that map to more than one gene.
 
-    mocker.patch.object(schema_ext, "get_settings", return_value=mocker.Mock(graph_backend="arcadedb"))
-    ddl = mocker.patch.object(schema_ext.arcadedb_http, "ensure_ddl")
+    Asserts on the DDL the registry generates rather than on mocked calls -- importing
+    spokebio.schema_ext is what registers the biology types.
+    """
+    from litgraph.db.registry import arcadedb_ddl, registry
+    from spokebio import schema_ext  # noqa: F401  -- imported for its registration side effect
 
-    schema_ext.ensure_schema()
-
-    statements = [c.args[0] for c in ddl.call_args_list]
+    statements = list(arcadedb_ddl(registry, embedding_dimensions=768))
     assert "CREATE PROPERTY Gene.locus_id STRING" in statements
     assert "CREATE INDEX ON Gene (locus_id) NOTUNIQUE" in statements
     assert "CREATE INDEX ON Gene (locus_id) UNIQUE" not in statements

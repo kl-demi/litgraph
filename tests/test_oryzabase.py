@@ -4,6 +4,7 @@ from spokebio.ingest.oryzabase import (
     extract_associated_with,
     iter_gene_rows,
 )
+from litgraph.graph.writer import CreateMissing
 from spokebio.models import AssociatedWith
 from spokebio.upsert import upsert_associated_with
 
@@ -155,25 +156,25 @@ def test_ensure_oryzabase_file_skips_download_if_already_cached(tmp_path, mocker
 
 
 def test_upsert_associated_with_writes_params(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
-    mock_run_write.return_value = [{"new_edges": 1}]
+    """Bootstraps the Gene but requires the Trait to exist, so an annotation to a TO term
+    obsoleted since Oryzabase wrote it is dropped rather than minting a nameless node."""
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
 
     new_count = upsert_associated_with(
         [AssociatedWith(gene_id="ncbigene:4352133", trait_id="TO:0000276", source_db="Oryzabase")]
     )
 
     assert new_count == 1
-    assert mock_run_write.call_args.kwargs["edges"][0] == {
-        "gene_id": "ncbigene:4352133",
-        "trait_id": "TO:0000276",
-        "source_db": "Oryzabase",
-    }
+    edge_type, rows = mock_edges.call_args.args
+    assert edge_type == "ASSOCIATED_WITH"
+    assert rows[0] == {"src": "ncbigene:4352133", "dst": "TO:0000276", "source_db": "Oryzabase"}
+    assert mock_edges.call_args.kwargs["create_missing"] is CreateMissing.SRC
 
 
 def test_upsert_associated_with_noop_on_empty(mocker):
-    mock_run_write = mocker.patch("spokebio.upsert.run_write")
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=0)
     assert upsert_associated_with([]) == 0
-    mock_run_write.assert_not_called()
+    assert mock_edges.call_args.args[1] == []
 
 
 def test_extract_associated_with_counts_annotations_to_unknown_traits(tmp_path):
