@@ -1,3 +1,17 @@
+"""Data models for the paper side of the graph.
+
+Exports:
+    Paper / CitationStub / EnrichmentResult: the ingestion payloads.
+    Source: enum of ingestion paths ("arxiv", "pubmed", ...).
+    Category / CategoryVocabulary, arxiv_category(), mesh_heading(): subject terms.
+    IdentifierNamespace / PAPER_IDENTIFIERS: the identifier schemes a Paper can carry;
+        add a new paper source by adding one entry.
+    identifier_columns(): flat vertex columns for graph/upsert.py.
+
+Usage: sources build `Paper(arxiv_id=..., ...)` or `Paper(pmid=..., ...)`; the flat kwargs
+fold into `Paper.identifiers`, and `Paper.id` is the namespaced graph key.
+"""
+
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -76,28 +90,13 @@ class Category(BaseModel):
 
 
 def arxiv_category(code: str) -> Category:
-    """Builds a Category for an arXiv taxonomy code.
-
-    Args:
-        code (str): The taxonomy code, e.g. "cs.CL". Used as its own display name --
-            arXiv publishes no separate long form in the metadata we ingest.
-
-    Returns:
-        Category: The namespaced arXiv category.
-    """
+    """Category for an arXiv taxonomy code (e.g. "cs.CL"), which is its own display name."""
     return Category(vocabulary=CategoryVocabulary.ARXIV, code=f"{CategoryVocabulary.ARXIV}:{code}", name=code)
 
 
 def mesh_heading(ui: str, name: str) -> Category:
-    """Builds a Category for a MeSH descriptor, keyed on its UI rather than its name.
-
-    Args:
-        ui (str): The descriptor's UI, e.g. "D009422".
-        name (str): Display text for the descriptor.
-
-    Returns:
-        Category: The namespaced MeSH category.
-    """
+    """Category for a MeSH descriptor, keyed on its UI (e.g. "D009422") -- names are
+    display-only since NLM renames descriptors between releases."""
     return Category(vocabulary=CategoryVocabulary.MESH, code=f"{CategoryVocabulary.MESH}:{ui}", name=name)
 
 
@@ -234,16 +233,8 @@ class EnrichmentResult(BaseModel):
 
 
 def _fold_flat_identifiers(data):
-    """Syntactic sugar for `Paper`/`CitationStub` constructors: folds `arxiv_id=`,
-    `pmid=`, `s2_paper_id=` kwargs into `identifiers`, so callers can write
-    `Paper(arxiv_id=...)` instead of `Paper(identifiers={"arxiv": ...})`.
-
-    Args:
-        data: Raw constructor input, before Pydantic validation.
-
-    Returns:
-        The same data, with any flat identifier kwargs moved into `identifiers`.
-    """
+    """Folds flat `arxiv_id=`/`pmid=`/`s2_paper_id=` kwargs into `identifiers`, so callers
+    can write `Paper(arxiv_id=...)` instead of `Paper(identifiers={"arxiv": ...})`."""
     if not isinstance(data, dict):
         return data
     flat = {column: data.pop(column) for column in list(data) if column in _NAMESPACES_BY_COLUMN}
@@ -258,15 +249,7 @@ def _fold_flat_identifiers(data):
 
 
 def _validate_identifiers(identifiers: dict[str, str], model_name: str) -> None:
-    """Checks that every prefix is registered and at least one identifier is set.
-
-    Args:
-        identifiers: Namespace prefix -> ID map to validate.
-        model_name: Name used in the raised error message.
-
-    Raises:
-        ValueError: If a prefix isn't registered, or no identifier is set.
-    """
+    """Raises ValueError unless every prefix is registered and at least one ID is set."""
     unknown = set(identifiers) - set(_NAMESPACES_BY_PREFIX)
     if unknown:
         raise ValueError(f"{model_name} has unregistered identifier namespace(s): {sorted(unknown)}")
@@ -275,16 +258,8 @@ def _validate_identifiers(identifiers: dict[str, str], model_name: str) -> None:
 
 
 def _graph_id(identifiers: dict[str, str], model_name: str) -> str:
-    """Picks the canonical graph ID: the first identifier present, in PAPER_IDENTIFIERS'
-    preference order. Shared by `Paper.id` and `CitationStub.id`.
-
-    Args:
-        identifiers: Namespace prefix -> ID map.
-        model_name: Name used in the raised error message.
-
-    Returns:
-        str: The namespaced ID, e.g. "arxiv:2101.00001".
-    """
+    """The canonical graph ID: the first identifier present in PAPER_IDENTIFIERS'
+    preference order, namespaced (e.g. "arxiv:2101.00001")."""
     _validate_identifiers(identifiers, model_name)
     for namespace in PAPER_IDENTIFIERS:
         value = identifiers.get(namespace.prefix)
@@ -294,15 +269,7 @@ def _graph_id(identifiers: dict[str, str], model_name: str) -> str:
 
 
 def identifier_columns(identifiers: dict[str, str]) -> Iterator[tuple[str, str | None]]:
-    """Yields every flat vertex column and its value, `None` for namespaces this paper
-    lacks. All namespaces are yielded, not just populated ones, because `_UPSERT_PAPERS`
-    SETs every column unconditionally -- omitting one would leave a stale value in place.
-
-    Args:
-        identifiers: Namespace prefix -> ID map.
-
-    Yields:
-        tuple[str, str | None]: (vertex column name, value or None).
-    """
+    """Yields (vertex column, value) for every namespace, `None` where absent -- the paper
+    upsert SETs all columns unconditionally, so omitting one would leave a stale value."""
     for namespace in PAPER_IDENTIFIERS:
         yield namespace.column, identifiers.get(namespace.prefix)
