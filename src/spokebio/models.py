@@ -19,29 +19,6 @@ class Pathway(BaseModel):
     source_db: str
 
 
-class Trait(BaseModel):
-    """A measurable trait from the Trait Ontology (TO) -- the named dimension being
-    measured ("drought tolerance"), not an observed value. See docs/plant_schema.md's
-    Trait row."""
-
-    trait_id: str
-    name: str
-    source_db: str
-
-
-class AssociatedWith(BaseModel):
-    """One Gene -> Trait association claim (currently sourced from Oryzabase).
-
-    No evidence_code, unlike ParticipatesIn: Oryzabase publishes no per-annotation
-    evidence code, so ``source_db`` is the only provenance available -- inventing a
-    code here would assert a confidence level the source doesn't state.
-    """
-
-    gene_id: str  # namespaced, e.g. "ncbigene:4326471"
-    trait_id: str  # bare native id, e.g. "TO:0000276"
-    source_db: str
-
-
 class ParticipatesIn(BaseModel):
     """One Gene -> Pathway membership claim (currently sourced from Reactome)."""
 

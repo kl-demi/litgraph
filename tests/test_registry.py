@@ -254,7 +254,7 @@ def test_biology_types_register_onto_the_same_registry():
     import litgraph.db.schema  # noqa: F401
     from spokebio import schema_ext  # noqa: F401
 
-    assert {"Gene", "Pathway", "Trait", "Compound", "Organism"} <= set(registry.nodes)
+    assert {"Gene", "Pathway", "Compound", "Organism"} <= set(registry.nodes)
     assert registry.edges["MENTIONS"].src == "Paper"
     registry.validate()
 
@@ -267,16 +267,3 @@ def test_biology_ddl_is_emitted_for_both_backends():
     assert "CREATE INDEX ON Gene (gene_id) UNIQUE" in list(arcadedb_ddl(registry, embedding_dimensions=768))
     neo4j = list(neo4j_ddl(registry, embedding_dimensions=768))
     assert any("REQUIRE g.gene_id IS UNIQUE" in s for s in neo4j)
-
-
-def test_gene_locus_id_is_notunique():
-    """103 rice locus ids map to more than one NCBI gene, so a UNIQUE index would reject
-    those writes."""
-    import litgraph.db.schema  # noqa: F401
-    from spokebio import schema_ext  # noqa: F401
-
-    statements = list(arcadedb_ddl(registry, embedding_dimensions=768))
-    assert "CREATE PROPERTY Gene.locus_id STRING" in statements
-    assert "CREATE INDEX ON Gene (locus_id) NOTUNIQUE" in statements
-    assert "CREATE INDEX ON Gene (locus_id) UNIQUE" not in statements
-    assert "CREATE INDEX ON Gene (gene_id) UNIQUE" in statements

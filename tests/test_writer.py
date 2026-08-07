@@ -66,8 +66,8 @@ def test_unregistered_row_keys_are_ignored(arcadedb):
 
 
 def test_nodes_key_comes_from_the_registry(arcadedb):
-    upsert_nodes("Trait", [{"trait_id": "TO:1"}], update_existing=True)
-    assert "SELECT FROM Trait WHERE trait_id = $r.trait_id" in _sql(arcadedb)
+    upsert_nodes("PubtatorChecked", [{"paper_id": "p1"}], update_existing=True)
+    assert "SELECT FROM PubtatorChecked WHERE paper_id = $r.paper_id" in _sql(arcadedb)
 
 
 def test_update_existing_rewrites_properties_on_match(arcadedb):
@@ -125,7 +125,7 @@ def test_create_missing_none_bootstraps_neither(arcadedb):
 
 
 def test_bootstrapping_a_non_bootstrappable_endpoint_raises(arcadedb):
-    """Paper/Pathway/Trait don't declare bootstrappable=True, so the policy can't be
+    """Paper/Pathway don't declare bootstrappable=True, so the policy can't be
     loosened at a call site."""
     with pytest.raises(ValueError, match="cannot bootstrap Paper"):
         upsert_edges(
