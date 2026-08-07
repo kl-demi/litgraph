@@ -31,7 +31,6 @@ CATEGORY = NodeType(
 )
 
 AUTHOR = NodeType(name="Author", key="name")
-"""A paper's author, keyed on name. No disambiguation across name collisions."""
 
 GRAPH_STATS = NodeType(name="GraphStats", key="id")
 """A singleton holding the counters for `stats overview`, so it never has to full-scan
