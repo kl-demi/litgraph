@@ -3,6 +3,7 @@ from typing import Any
 import httpx
 
 from litgraph.config import get_settings
+from litgraph.db.context import current_database
 
 
 def run_command(sql: str, **params: Any) -> list[dict]:
@@ -21,6 +22,28 @@ def run_script(sql: str, **params: Any) -> list[dict]:
 def run_query(sql: str, **params: Any) -> list[dict]:
     """Execute a read-only SQL statement against ArcadeDB."""
     return _post("query", sql, params)
+
+
+def run_raw(command: str, language: str = "sql", read_only: bool = True, limit: int | None = None) -> list[dict]:
+    """Execute a user-authored statement in any server language (dashboard query page).
+
+    SQLScript is transactional and only accepted by the command endpoint, so
+    read_only is ignored for it.
+    """
+    endpoint = "query" if read_only and language != "sqlscript" else "command"
+    return _post(endpoint, command, {}, language=language, limit=limit)
+
+
+def list_databases() -> list[str]:
+    """Return the database names on the server (what Studio's dropdown shows)."""
+    settings = get_settings()
+    response = httpx.get(
+        f"{settings.arcadedb_http_url}/api/v1/databases",
+        auth=(settings.arcadedb_user, settings.arcadedb_password),
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json().get("result", [])
 
 
 def ensure_ddl(sql: str) -> None:
@@ -52,12 +75,16 @@ def ensure_database() -> None:
             raise
 
 
-def _post(endpoint: str, sql: str, params: dict, language: str = "sql") -> list[dict]:
+def _post(
+    endpoint: str, sql: str, params: dict, language: str = "sql", limit: int | None = None
+) -> list[dict]:
     settings = get_settings()
-    url = f"{settings.arcadedb_http_url}/api/v1/{endpoint}/{settings.arcadedb_database}"
+    url = f"{settings.arcadedb_http_url}/api/v1/{endpoint}/{current_database()}"
     body: dict[str, Any] = {"language": language, "command": sql}
     if params:
         body["params"] = params
+    if limit is not None:
+        body["limit"] = limit
     response = httpx.post(
         url,
         json=body,

@@ -7,6 +7,7 @@ from neo4j.exceptions import ClientError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from litgraph.config import get_settings
+from litgraph.db.context import current_database
 
 # ArcadeDB's Bolt plugin is a community reimplementation of the protocol, not Neo4j
 # itself, and intermittently loses track of a transaction between its final query and
@@ -45,7 +46,7 @@ def _session_database() -> str | None:
     settings = get_settings()
     if settings.graph_backend == "neo4j":
         return None
-    return settings.arcadedb_database
+    return current_database()
 
 
 @retry(
