@@ -45,11 +45,11 @@ data/                  cached source downloads (gitignored)
 | Schema | `db/registry.py`, `db/schema.py`, `spokebio/schema_ext.py` | §3 |
 | Models | `litgraph/models.py`, `spokebio/models.py` | §4 |
 | Write path | `graph/writer.py`, `graph/upsert.py`, `spokebio/upsert.py` | §5 |
-| Query | `litgraph/search/*`, `cli.py` | §6 |
-| Paper ingestion | `litgraph/ingest/*` | §7 |
-| Bio ingestion | `spokebio/ingest/*`, `spokebio/pipeline.py` | §8 |
-| Identity resolution | `spokebio/ingest/{gene,chebi_mesh}_crosswalk.py` | §9 |
-| Entity extraction | `spokebio/extract.py`, `spokebio/ingest/pubtator.py` | §10 |
+| Paper ingestion | `litgraph/ingest/*` | §6 |
+| Bio ingestion | `spokebio/ingest/*`, `spokebio/pipeline.py` | §7 |
+| Identity resolution | `spokebio/ingest/{gene,chebi_mesh}_crosswalk.py` | §8 |
+| Entity extraction | `spokebio/extract.py`, `spokebio/ingest/pubtator.py` | §9 |
+| Query | `litgraph/search/*`, `cli.py` | §10 |
 
 ## 2. Storage backends
 
@@ -239,28 +239,7 @@ Reactome-bootstrapped genes are key-only (Reactome's file has no gene symbols).
 mentions the same gene with a symbol via `upsert_mentions` — never overwrites a name
 already set.
 
-## 6. Query layer
-
-Query modules, each wrapping one kind of read:
-
-- `search/keyword.py` — full-text index
-- `search/semantic.py` — SPECTER2 vector index
-- `search/citations.py` — CITES traversals, most-cited
-- `search/stats.py` — GraphStats overview + rebuild, plus per-type node/edge counts
-- `search/genes.py` — gene lookup, papers mentioning a gene, pathways, co-mentioned
-  genes; the first bio query surface
-
-Two front ends sit on top of these modules:
-
-- the `litgraph` CLI — `search keyword|semantic`, `citations`, `stats
-  count|latest|oldest|most-cited|top-authors|overview|rebuild`, `runs`
-- `apps/dashboard.py`, a Streamlit UI (`streamlit run apps/dashboard.py`) with Overview,
-  Papers, Citations, and Biology pages; citation and gene results are drawn as
-  node-and-edge graphs
-
-Bio queries beyond genes still run as ad-hoc SQL, outside this layer.
-
-## 7. Paper ingestion
+## 6. Paper ingestion
 
 Each source module normalizes to `Paper`. Most jobs share one loop,
 `ingest/pipeline.py`'s `_consume` helper: a source hands it an iterator of `Paper`, and
@@ -317,7 +296,7 @@ silently omits ids it doesn't recognize.
 This asymmetry is why the two halves share schema/write/query layers but not an ingestion
 framework.
 
-## 8. Biology ingestion
+## 7. Biology ingestion
 
 Two sources feed the graph:
 
@@ -348,7 +327,7 @@ A few conventions shared across these loaders:
   match) — logged on every run, so a rising drop rate shows up as a number instead of
   quietly getting worse.
 
-## 9. Identity resolution
+## 8. Identity resolution
 
 Reactome's bulk files name genes and compounds using identifier schemes that don't match
 `litgraph`'s own node keys. A crosswalk resolves one to the other before anything is
@@ -369,7 +348,7 @@ written: *identifier string → canonical namespaced key, or nothing — never i
   33.7% combined coverage of Reactome's referenced ids. Unresolved ids are dropped
   rather than keyed under a second namespace.
 
-## 10. Entity extraction
+## 9. Entity extraction
 
 Extractors implement a shared `Extractor` protocol (`spokebio/extract.py`), instead of
 each writing its own fetch/checkpoint/upsert loop:
@@ -395,6 +374,28 @@ Two things are tracked per extractor, not globally:
 One extractor exists today: `PubTatorExtractor` (`name="pubtator3"`,
 `requires=("pmid",)`), which wraps `PubTatorClient`'s batched, rate-limited calls to
 PubTator3's API and yields Gene/Compound/Organism mentions.
+
+## 10. Query layer
+
+Query modules, each wrapping one kind of read:
+
+- `search/keyword.py` — full-text index
+- `search/semantic.py` — SPECTER2 vector index
+- `search/citations.py` — CITES traversals, most-cited
+- `search/stats.py` — GraphStats overview + rebuild, plus per-type node/edge counts
+- `search/genes.py` — gene lookup, papers mentioning a gene, pathways, co-mentioned
+  genes; the first bio query surface
+
+Two front ends sit on top of these modules:
+
+- the `litgraph` CLI — `search keyword|semantic`, `citations`, `stats
+  count|latest|oldest|most-cited|top-authors|overview|rebuild`, `runs`
+- `apps/dashboard.py`, a Streamlit UI (`streamlit run apps/dashboard.py`) with Overview,
+  Papers, Citations, and Biology pages; citation and gene results are drawn as
+  node-and-edge graphs
+
+Bio queries beyond genes still run as ad-hoc SQL, outside this layer.
+
 
 ## 11. Pending work
 
