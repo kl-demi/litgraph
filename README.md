@@ -1,70 +1,95 @@
 # litgraph
 
-Academic paper ingestion & search backed by ArcadeDB: keyword search, semantic (vector)
-search, and citation graph traversal. Currently ingests from arXiv, with
-more sources (e.g. PubMed) planned.
+A literature knowledge graph: papers ingested from arXiv, Kaggle, and PubMed, joined
+with biology entities (genes, compounds, pathways) extracted from those papers or
+loaded from curated databases (GO, Reactome) — so a query can traverse from a paper
+straight to the biology it's evidence for.
 
-- **Storage**: ArcadeDB (self-hosted, Apache-2.0) by default. A vector index handles
-  semantic search, a full-text index handles keyword search, and the graph itself models
-  the citation network.
-- **Embeddings**: SPECTER2 (`allenai/specter2_base` + `allenai/specter2` proximity adapter,
-  768-dim), run locally via the `adapters` library — no external embedding API/cost. It is
-  trained on citation networks, ideal for semantic search and relatedness of scientific and
-  biomedical papers in a graph database.
-- **Ingestion**: historical backload from the Kaggle arXiv metadata snapshot, daily
-  incremental fetch from the arXiv API, citation enrichment from Semantic Scholar.
-- **Deferred**: a FastAPI query layer and cron-based daily scheduling. For now, everything
-  is a CLI command and a set of plain importable functions in `litgraph.search.*`
-  that a future API layer can call directly.
+Backed by ArcadeDB by default (Neo4j also supported, see below). Keyword search
+(full-text index), semantic search (a SPECTER2 vector index), and citation-graph
+traversal, plus PubTator3-based entity extraction for the biology side.
+
+Two packages:
+- `src/litgraph/` — the source-agnostic core: schema registry, models, write path,
+  search, paper ingestion, CLI.
+- `src/spokebio/` — the biology extension, depending on `litgraph` as a library.
+
+For the full design (schema, write path, ingestion, entity extraction), see
+[`docs/architecture.md`](docs/architecture.md). For running it in production, see
+[`docs/instructions.md`](docs/instructions.md).
 
 ## Setup
 
 ```bash
 uv sync --extra dev
-cp .env.example .env   # fill in SEMANTIC_SCHOLAR_API_KEY
-docker compose -f docker-compose.arcadedb.yml up -d
+cp .env.example .env   # fill in SEMANTIC_SCHOLAR_API_KEY, NCBI_EMAIL
+docker compose up -d   # starts ArcadeDB
 uv run litgraph init-db
 ```
 
-<!-- ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`). -->
+Add the biology schema (optional — only needed if you'll ingest GO/Reactome/PubTator3
+data):
+
+```bash
+uv run python -c "from spokebio.schema_ext import ensure_schema; ensure_schema()"
+```
+
+ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
 
 ## Usage
 
+**Papers**
+
 ```bash
-# --- Step 1: Start up container
-docker compose -f docker-compose.arcadedb.yml up -d
-
-# --- Step 2: Choose any of the following:
-
 # Backload a subset of the Kaggle arxiv-metadata-oai-snapshot.json(.gz)
 # (download separately via `kaggle datasets download -d Cornell-University/arxiv`)
 uv run litgraph backload --file /path/to/arxiv-metadata-oai-snapshot.json \
     --categories cs.AI,cs.CV --start-date 2023-01-01 --limit 5000
 
-# Enrich ingested papers with Semantic Scholar citation data
-uv run litgraph enrich --limit 500
-
-# Pull new papers submitted since the last run (safe to run daily via cron later)
+# New arXiv papers since the last run (safe to cron daily)
 uv run litgraph fetch-daily --categories cs.CL,cs.LG
 
-# Search
-uv run litgraph search keyword "diffusion models"
-uv run litgraph search semantic "generative models for images"
+# PubMed, via NCBI's E-utilities
+uv run litgraph backload-pubmed-api --mesh-terms '"Genomics"[Mesh]' --limit 5000
+uv run litgraph fetch-daily-pubmed --mesh-terms '"Genomics"[Mesh]'
 
-# Citation graph
-uv run litgraph citations 1706.03762 --direction both --depth 2
+# Citation counts + citation-graph stub papers, from Semantic Scholar
+uv run litgraph enrich --limit 500
 ```
 
-<!-- ## Alternative: Neo4j backend
-
-Neo4j also works as a backend, toggled via `GRAPH_BACKEND`. Most of this codebase is
-backend-agnostic Cypher that runs unmodified against either engine — only vector search,
-full-text search, and schema/index setup differ, since those go through each engine's own
-procedures/SQL (`db.index.vector.queryNodes`, `CREATE VECTOR INDEX`, etc. for Neo4j) rather
-than anything in the openCypher standard both engines implement.
+**Search**
 
 ```bash
-docker compose up -d   # starts Neo4j via docker-compose.yml
+uv run litgraph search keyword "diffusion models"
+uv run litgraph search semantic "generative models for images"
+uv run litgraph citations 1706.03762 --direction both --depth 2
+uv run litgraph stats overview
+```
+
+**Biology** (standalone scripts today, not yet on the `litgraph` CLI — see
+`docs/architecture.md` §7-8)
+
+```bash
+uv run scripts/go_pathways.py          # GO biological_process terms -> Pathway nodes
+uv run scripts/reactome_pathways.py    # Reactome human pathways + PARTICIPATES_IN/PRODUCES
+uv run scripts/pubtator_mentions.py    # PubTator3 entity mentions -> Gene/Compound/Organism
+```
+
+**Dashboard** — a Streamlit UI over the query layer (`uv sync --extra demo` first):
+
+```bash
+streamlit run apps/dashboard.py
+```
+
+`uv run litgraph --help` lists every command.
+
+## Neo4j backend (alternative)
+
+Most of the codebase is backend-agnostic Cypher; only vector search, full-text search,
+and schema/index setup go through each engine's own procedures.
+
+```bash
+docker compose -f docker-compose.neo4j.yml up -d
 ```
 
 Then in `.env`, switch the backend (see the commented-out block at the bottom of
@@ -74,44 +99,28 @@ Then in `.env`, switch the backend (see the commented-out block at the bottom of
 GRAPH_BACKEND=neo4j
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=<matches NEO4J_PASSWORD used to start docker-compose.yml>
+NEO4J_PASSWORD=<matches NEO4J_PASSWORD used to start docker-compose.neo4j.yml>
 ```
 
 ```bash
 uv run litgraph init-db
 ```
 
-Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`).
-Everything else — `backload`, `enrich`, `fetch-daily`, `search keyword`, `search semantic`,
-`citations` — works the same regardless of backend. -->
-
-## Graph schema
-
-**Nodes**
-- `Paper {id, arxiv_id, s2_paper_id, title, abstract, categories, primary_category,
-  published_date, updated_date, doi, journal_ref, comments, embedding, citation_count,
-  reference_count, influential_citation_count, source, is_stub, fetched_at, enriched_at,
-  embedded_at}` — `id` is `arxiv_id` when known, else `s2:<s2_paper_id>`. Citation targets
-  outside the ingested set are written as lightweight stub nodes (`is_stub: true`) and get
-  filled in automatically if that paper is later fully ingested.
-- `Author {name}`, `Category {code}`
-
-**Relationships**
-- `(:Author)-[:AUTHORED]->(:Paper)`
-- `(:Paper)-[:IN_CATEGORY]->(:Category)`
-- `(:Paper)-[:CITES]->(:Paper)`
+Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`). Every
+command above works the same regardless of backend.
 
 ## Known limitations
 
-- Author disambiguation: authors are merged by normalized name string, not a stable ID —
-  two different people with the same name become one node.
+- Author disambiguation: authors are merged by normalized name string, not a stable
+  ID — two different people with the same name become one node.
 - Semantic Scholar's batch endpoint caps citations/references per paper rather than
-  returning the full list; landmark papers with huge citation counts are undercounted in
-  the graph even though `citation_count`/`reference_count` on the node reflect the true
-  totals. Upgrading to the paginated `/paper/{id}/citations` and `/paper/{id}/references`
-  endpoints is the natural next step if exhaustive edges are needed.
-- `enrich` only processes papers that have never been enriched (`enriched_at IS NULL`);
-  there's no re-enrichment of stale citation counts yet.
+  returning the full list; a landmark paper's citation edges in the graph undercount
+  its true `citation_count`/`reference_count`.
+- `enrich` only processes papers never yet enriched (`enriched_at IS NULL`) — no
+  re-enrichment of stale citation counts.
+
+See [`docs/known_bugs.md`](docs/known_bugs.md) for bug history and
+[`docs/architecture.md`](docs/architecture.md) §11 for the open work list.
 
 ## Tests
 
