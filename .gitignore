@@ -11,5 +11,5 @@ build/
 .claude/
 inspect_db.sql
 data/
-docs/
+docs/*.html
 logs/
