@@ -1,11 +1,11 @@
 """A backend-agnostic declarative registry. It defines:
     - Declarative building blocks: `Prop`, `NodeType`, `EdgeType`;
     - DDL emitters for ArcadeDB and Neo4j;
-    - The Registry instance that determines what types a database should have.
+    - The Registry instance that tracks what types a database has.
 
 Any package can create new types as `NodeType`/`EdgeType` instances and call register()
-to add them to the shared registry. eg. `schema.py` adds paper-graph types, while
-`spokebio.schema_ext` adds the biology types.
+to add them to the shared registry. This is done in `schema.py` (paper types) and
+`spokebio.schema_ext` (biology types).
 """
 
 from collections.abc import Iterable, Iterator
