@@ -1,9 +1,9 @@
 """LitGraph dashboard: browse what's been ingested, run queries, see results as a graph.
 
-Pages: Search (entity matches + keyword/semantic paper search), Overview (counts and
-corpus tables), Citations, Biology (gene explorer), Query (raw SQL/Cypher, like Studio's
-query tab), Database (type cards + schema detail). A ?paper=<id> link opens the Paper
-page, which is reached from search hits rather than the sidebar.
+Pages: Search (entity matches + keyword/semantic paper search), Overview (coverage and
+corpus tables), Query (raw SQL/Cypher, like Studio's query tab), Database (type cards +
+schema detail). The Paper and Gene pages are reached from links rather than the sidebar,
+at ?paper=<id> and ?gene=<id>.
 
 Run with: streamlit run apps/dashboard.py
 """
@@ -25,7 +25,6 @@ from litgraph.search.genes import (
     get_gene,
     papers_mentioning_gene,
     pathways_for_gene,
-    search_genes,
     traits_for_gene,
 )
 from litgraph.search.keyword import keyword_search
@@ -112,18 +111,37 @@ def _schema_types(db: str) -> list[dict]:
     return run_query("select from schema:types")
 
 
+def _coverage(label: str, part: int, whole: int, unit: str) -> None:
+    """One labelled progress bar, stating the denominator it is a share of."""
+    share = part / whole if whole else 0.0
+    st.progress(share, text=f"**{label}** — {share:.1%}  ·  {part:,} of {whole:,} {unit}")
+
+
 def page_overview() -> None:
     st.title("📚 LitGraph overview")
     data = _overview(st.session_state["db"])
 
-    cols = st.columns(5)
-    cols[0].metric("Papers", f"{data['papers']:,}")
-    cols[1].metric("Stubs", f"{data['stubs']:,}")
-    cols[2].metric("Enriched", f"{data['enriched']:,}")
-    cols[3].metric("Embedded", f"{data['embedded']:,}")
-    cols[4].metric("Authors", f"{data['authors']:,}")
+    # `papers` already excludes stubs, so the record total is the two added together.
+    full, stubs = data["papers"], data["stubs"]
+    records = full + stubs
+
+    cols = st.columns(3)
+    cols[0].metric("Paper records", f"{records:,}")
+    cols[1].metric("Full papers", f"{full:,}")
+    cols[2].metric("Authors", f"{data['authors']:,}")
     if data.get("earliest_published") and data.get("latest_published"):
         st.caption(f"Published range: {data['earliest_published']} → {data['latest_published']}")
+
+    st.subheader("Paper coverage")
+    _coverage("Full records", full, records, "Paper records")
+    _coverage("Enriched", data["enriched"], full, "full papers")
+    _coverage("Embedded", data["embedded"], full, "full papers")
+    st.caption(
+        "A stub is a placeholder created by a citation edge — a title at most — so it can be "
+        "neither enriched nor embedded. Both are therefore measured against full papers, not "
+        "against every record: on a citation-heavy graph the two denominators differ by more "
+        "than tenfold."
+    )
 
     if data.get("by_source"):
         st.subheader("By source")
@@ -447,81 +465,6 @@ def page_gene(gene_id: str) -> None:
         st.caption(" · ".join(filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))))
 
 
-def page_citations() -> None:
-    st.title("🔗 Citations")
-    paper_id = st.text_input("Paper id (arXiv id or PMID)", placeholder="e.g. 2101.00001 or 33574319")
-    if not paper_id:
-        st.stop()
-
-    references = get_references(paper_id, limit=15)
-    citing = get_citing_papers(paper_id, limit=15)
-    if not references and not citing:
-        st.warning("No citation edges found for that id.")
-        st.stop()
-
-    nodes = {paper_id: (_clip(paper_id), "Paper")}
-    edges = []
-    for row in references:
-        nodes[row["id"]] = (_clip(row["title"]), "Paper")
-        edges.append((paper_id, row["id"], "CITES"))
-    for row in citing:
-        nodes[row["id"]] = (_clip(row["title"]), "Paper")
-        edges.append((row["id"], paper_id, "CITES"))
-    st.graphviz_chart(_dot(nodes, edges), width="stretch")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader(f"References ({len(references)})")
-        st.dataframe(references, width="stretch", hide_index=True)
-    with col2:
-        st.subheader(f"Cited by ({len(citing)})")
-        st.dataframe(citing, width="stretch", hide_index=True)
-
-
-def page_biology() -> None:
-    st.title("🧬 Biology")
-    query = st.text_input("Search for a gene by name", placeholder="e.g. TP53, insulin, BRCA1")
-    if not query:
-        st.stop()
-
-    matches = search_genes(query)
-    if not matches:
-        st.warning(f"No genes found matching '{query}'.")
-        st.stop()
-
-    options = {f"{m['name']} ({m['gene_id']})": m["gene_id"] for m in matches}
-    choice = st.selectbox("Matching genes", options.keys())
-    gene_id = options[choice]
-
-    papers = papers_mentioning_gene(gene_id, limit=10)
-    pathways = pathways_for_gene(gene_id, limit=10)
-    co_mentioned = co_mentioned_genes(gene_id, limit=8)
-
-    nodes = {gene_id: (choice.split(" (")[0], "Gene")}
-    edges = []
-    for row in papers:
-        nodes[row["id"]] = (_clip(row["title"]), "Paper")
-        edges.append((row["id"], gene_id, row.get("source") or "MENTIONS"))
-    for row in pathways:
-        nodes[row["pathway_id"]] = (_clip(row["name"]), "Pathway")
-        edges.append((gene_id, row["pathway_id"], row.get("evidence_code") or "PARTICIPATES_IN"))
-    for row in co_mentioned:
-        nodes[row["gene_id"]] = (row["name"] or row["gene_id"], "Gene")
-        edges.append((gene_id, row["gene_id"], f"co-mentioned ×{row['shared_papers']}"))
-    st.graphviz_chart(_dot(nodes, edges), width="stretch")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.subheader(f"Papers ({len(papers)})")
-        st.dataframe(papers, width="stretch", hide_index=True)
-    with col2:
-        st.subheader(f"Pathways ({len(pathways)})")
-        st.dataframe(pathways, width="stretch", hide_index=True)
-    with col3:
-        st.subheader(f"Co-mentioned genes ({len(co_mentioned)})")
-        st.dataframe(co_mentioned, width="stretch", hide_index=True)
-
-
 _QUERY_LANGUAGES = {"SQL": "sql", "SQL Script": "sqlscript", "Cypher": "opencypher"}
 
 
@@ -660,8 +603,6 @@ def page_database() -> None:
 _PAGES = {
     "Search": page_search,
     "Overview": page_overview,
-    "Citations": page_citations,
-    "Biology": page_biology,
     "Query": page_query,
     "Database": page_database,
 }
