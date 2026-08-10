@@ -23,7 +23,16 @@ For the full design (schema, write path, ingestion, entity extraction), see
 ```bash
 uv sync --extra dev
 cp .env.example .env   # fill in SEMANTIC_SCHOLAR_API_KEY, NCBI_EMAIL
-docker compose up -d   # starts ArcadeDB
+```
+
+## Usage
+
+### Create a new database
+
+Only needed once, against a fresh database:
+
+```bash
+docker compose up -d   # starts ArcadeDB, if running locally
 uv run litgraph init-db
 ```
 
@@ -34,9 +43,8 @@ data):
 uv run python -c "from spokebio.schema_ext import ensure_schema; ensure_schema()"
 ```
 
-ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
-
-## Usage
+For a new database on the shared AWS instance instead of locally, see
+`docs/instructions.md`'s "Creating a new database" section.
 
 ### See what's in the graph
 
