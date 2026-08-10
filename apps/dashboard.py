@@ -8,6 +8,7 @@ at ?paper=<id> and ?gene=<id>.
 Run with: streamlit run apps/dashboard.py
 """
 
+import re
 import time
 from urllib.parse import quote
 
@@ -85,6 +86,74 @@ def _dot(nodes: dict[str, tuple[str, str]], edges: list[tuple[str, str, str]]) -
 def _clip(text: str | None, n: int = 45) -> str:
     text = text or "?"
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# Record ids come back from the server, but they are about to be pasted into a SQL
+# statement, so they are shape-checked rather than trusted.
+_RID = re.compile(r"^#\d+:\d+$")
+_MAX_GRAPH_NODES = 60
+
+
+def _node_label(record: dict) -> str:
+    """The most human field on a record: a name, a title, else any identifier."""
+    for key in ("name", "title"):
+        if record.get(key):
+            return _clip(str(record[key]), 30)
+    for key, value in record.items():
+        if key.endswith("_id") and value:
+            return _clip(str(value), 30)
+    return record.get("@rid", "?")
+
+
+def _resolve_rids(rids: list[str]) -> dict[str, dict]:
+    """Fetch records an edge points at that the result itself didn't include."""
+    safe = [rid for rid in rids if _RID.match(rid)][:_MAX_GRAPH_NODES]
+    if not safe:
+        return {}
+    try:
+        rows = run_query(f"SELECT FROM [{','.join(safe)}]")
+    except httpx.HTTPError:
+        return {}
+    return {row["@rid"]: row for row in rows if row.get("@rid")}
+
+
+def _result_graph(rows: list[dict]) -> tuple[str, str] | None:
+    """DOT for a graph-shaped result, plus a note on anything left out.
+
+    Returns None when the rows carry no record identity — a projection such as
+    `SELECT name FROM Gene`, or any Cypher result.
+    """
+    vertices = {r["@rid"]: r for r in rows if r.get("@cat") == "v" and r.get("@rid")}
+    edge_rows = [r for r in rows if r.get("@cat") == "e"]
+    if not vertices and not edge_rows:
+        return None
+
+    endpoints = {
+        str(r[end]) for r in edge_rows for end in ("@out", "@in") if _RID.match(str(r.get(end, "")))
+    }
+    unresolved = sorted(endpoints - set(vertices))
+    vertices |= _resolve_rids(unresolved)
+    # Anything still unresolved is drawn by id, so its edges stay visible.
+    for rid in endpoints - set(vertices):
+        vertices[rid] = {"@rid": rid}
+
+    kept = dict(list(vertices.items())[:_MAX_GRAPH_NODES])
+    nodes = {rid: (_node_label(v), v.get("@type", "")) for rid, v in kept.items()}
+    edges = [
+        (str(r["@out"]), str(r["@in"]), r.get("@type", ""))
+        for r in edge_rows
+        if str(r.get("@out")) in nodes and str(r.get("@in")) in nodes
+    ]
+    if not nodes:
+        return None
+
+    notes = []
+    if len(vertices) > len(nodes):
+        notes.append(f"showing {len(nodes)} of {len(vertices)} nodes")
+    hidden_edges = len(edge_rows) - len(edges)
+    if hidden_edges:
+        notes.append(f"{hidden_edges} edges hidden (an endpoint is outside the drawn nodes)")
+    return _dot(nodes, edges), "; ".join(notes).capitalize()
 
 
 # The `db` argument on the cached helpers below is only a cache key: routing to the
@@ -511,7 +580,20 @@ def page_query() -> None:
     if not rows:
         st.info("No results.")
         return
-    tab_table, tab_json = st.tabs(["Table", "JSON"])
+    tab_graph, tab_table, tab_json = st.tabs(["Graph", "Table", "JSON"])
+    with tab_graph:
+        graph = _result_graph(rows)
+        if graph is None:
+            st.info(
+                "Nothing to draw. A result is drawable when it holds whole records — "
+                "`SELECT FROM Gene`, not `SELECT name FROM Gene`. Cypher returns plain property "
+                "maps with no record identity, so graph views need SQL."
+            )
+        else:
+            dot, note = graph
+            st.graphviz_chart(dot, width="stretch")
+            if note:
+                st.caption(note)
     with tab_table:
         try:
             st.dataframe(rows, width="stretch")
