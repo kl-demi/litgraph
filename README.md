@@ -38,7 +38,34 @@ ArcadeDB Studio is at http://localhost:2480 (user `root`, password from `.env`).
 
 ## Usage
 
-**Papers**
+### See what's in the graph
+
+**Dashboard** — a Streamlit UI over the query layer: overview counts, keyword/semantic
+search, citation and gene neighborhoods drawn as graphs.
+
+```bash
+uv sync --extra demo   # once
+streamlit run apps/dashboard.py
+```
+
+**ArcadeDB Studio** — the database's own UI, at http://localhost:2480 (user `root`,
+password from `.env`) for a locally-run instance. Against the shared/production
+instance, Studio is only reachable over Tailscale — talk to Arjun for access.
+
+### CLI
+
+If you'd rather not use the dashboard, the same queries are available directly:
+
+```bash
+uv run litgraph search keyword "diffusion models"
+uv run litgraph search semantic "generative models for images"
+uv run litgraph citations 1706.03762 --direction both --depth 2
+uv run litgraph stats overview
+```
+
+`uv run litgraph --help` lists every command.
+
+### Backload papers
 
 ```bash
 # Backload a subset of the Kaggle arxiv-metadata-oai-snapshot.json(.gz)
@@ -57,17 +84,10 @@ uv run litgraph fetch-daily-pubmed --mesh-terms '"Genomics"[Mesh]'
 uv run litgraph enrich --limit 500
 ```
 
-**Search**
+### Biology ingestion
 
-```bash
-uv run litgraph search keyword "diffusion models"
-uv run litgraph search semantic "generative models for images"
-uv run litgraph citations 1706.03762 --direction both --depth 2
-uv run litgraph stats overview
-```
-
-**Biology** (standalone scripts today, not yet on the `litgraph` CLI — see
-`docs/architecture.md` §7-8)
+Standalone scripts today, not yet on the `litgraph` CLI — see `docs/architecture.md`
+§7-8.
 
 ```bash
 uv run scripts/go_pathways.py          # GO biological_process terms -> Pathway nodes
@@ -75,18 +95,11 @@ uv run scripts/reactome_pathways.py    # Reactome human pathways + PARTICIPATES_
 uv run scripts/pubtator_mentions.py    # PubTator3 entity mentions -> Gene/Compound/Organism
 ```
 
-**Dashboard** — a Streamlit UI over the query layer (`uv sync --extra demo` first):
+## Neo4j backend
 
-```bash
-streamlit run apps/dashboard.py
-```
-
-`uv run litgraph --help` lists every command.
-
-## Neo4j backend (alternative)
-
-Most of the codebase is backend-agnostic Cypher; only vector search, full-text search,
-and schema/index setup go through each engine's own procedures.
+If you want to migrate to the Neo4j backend: most of the codebase is backend-agnostic
+Cypher, and only vector search, full-text search, and schema/index setup go through
+each engine's own procedures.
 
 ```bash
 docker compose -f docker-compose.neo4j.yml up -d
@@ -109,18 +122,11 @@ uv run litgraph init-db
 Neo4j Browser is at http://localhost:7474 (user `neo4j`, password from `.env`). Every
 command above works the same regardless of backend.
 
-## Known limitations
+## Pending work & known limitations
 
-- Author disambiguation: authors are merged by normalized name string, not a stable
-  ID — two different people with the same name become one node.
-- Semantic Scholar's batch endpoint caps citations/references per paper rather than
-  returning the full list; a landmark paper's citation edges in the graph undercount
-  its true `citation_count`/`reference_count`.
-- `enrich` only processes papers never yet enriched (`enriched_at IS NULL`) — no
-  re-enrichment of stale citation counts.
-
-See [`docs/known_bugs.md`](docs/known_bugs.md) for bug history and
-[`docs/architecture.md`](docs/architecture.md) §11 for the open work list.
+Not tracked here to avoid drift — see [`docs/architecture.md`](docs/architecture.md)
+§11 for the open work list, and [`docs/known_bugs.md`](docs/known_bugs.md) for bug
+history.
 
 ## Tests
 
