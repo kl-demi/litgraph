@@ -1,6 +1,7 @@
 import gzip
 
 from spokebio.ingest.gene_crosswalk import (
+    GENE_INFO_BASE_URL,
     build_locus_tag_crosswalk,
     ensure_gene_info_file,
     iter_gene_info_rows,
@@ -61,37 +62,16 @@ def test_build_locus_tag_crosswalk_skips_rows_without_a_locus_tag(tmp_path):
     assert len(crosswalk) == 2
 
 
-def test_ensure_gene_info_file_skips_download_if_already_cached(tmp_path, mocker):
-    organism_dir = tmp_path
-    gene_info_file = organism_dir / "Arabidopsis_thaliana.gene_info.gz"
-    gene_info_file.write_text(_FIXTURE)
-    mock_stream = mocker.patch("spokebio.ingest.gene_crosswalk.httpx.stream")
+# Download mechanics are covered once for every source in test_download.py; this
+# only checks the URL/path wiring.
+def test_ensure_gene_info_file_wires_the_organism_into_url_and_path(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.gene_crosswalk.ensure_cached_file", return_value="path")
 
-    result = ensure_gene_info_file(organism="Arabidopsis_thaliana", dir_path=organism_dir)
+    result = ensure_gene_info_file(organism="Arabidopsis_thaliana", dir_path=tmp_path, force=True)
 
-    assert result == str(gene_info_file)
-    mock_stream.assert_not_called()
-
-
-def test_ensure_gene_info_file_downloads_when_missing(tmp_path, mocker):
-    organism_dir = tmp_path / "subdir"
-
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield _FIXTURE.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mocker.patch("spokebio.ingest.gene_crosswalk.httpx.stream", return_value=FakeStreamResponse())
-
-    result = ensure_gene_info_file(organism="Arabidopsis_thaliana", dir_path=organism_dir)
-
-    assert result == str(organism_dir / "Arabidopsis_thaliana.gene_info.gz")
-    assert (organism_dir / "Arabidopsis_thaliana.gene_info.gz").read_text() == _FIXTURE
+    assert result == "path"
+    ensure_cached.assert_called_once_with(
+        f"{GENE_INFO_BASE_URL}/Arabidopsis_thaliana.gene_info.gz",
+        tmp_path / "Arabidopsis_thaliana.gene_info.gz",
+        True,
+    )

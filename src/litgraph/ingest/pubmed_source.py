@@ -6,19 +6,9 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from litgraph.config import get_settings
-from litgraph.db.neo4j_client import chunked, run_read, run_write
+from litgraph.db.neo4j_client import chunked
 from litgraph.ingest._pubmed_xml import iter_pubmed_articles, parse_pubmed_article
 from litgraph.models import Paper, Source
-
-_GET_CHECKPOINT = """
-MATCH (s:IngestState {job: $job})
-RETURN s.last_seen_date AS last_seen_date
-"""
-
-_SET_CHECKPOINT = """
-MERGE (s:IngestState {job: $job})
-SET s.last_seen_date = $last_seen_date, s.last_run_at = $last_run_at
-"""
 
 _EFETCH_BATCH_SIZE = 200
 
@@ -54,27 +44,6 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code >= 500
     return isinstance(exc, httpx.TransportError)
-
-
-def get_checkpoint(job: str = "pubmed_daily") -> datetime | None:
-    rows = run_read(_GET_CHECKPOINT, job=job)
-    if not rows or rows[0]["last_seen_date"] is None:
-        return None
-    value = rows[0]["last_seen_date"]
-    if hasattr(value, "to_native"):
-        return value.to_native()
-    if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    return value
-
-
-def set_checkpoint(last_seen_date: datetime, job: str = "pubmed_daily") -> None:
-    run_write(
-        _SET_CHECKPOINT,
-        job=job,
-        last_seen_date=last_seen_date.isoformat(),
-        last_run_at=datetime.now(UTC).isoformat(),
-    )
 
 
 def _entrez_params() -> dict:

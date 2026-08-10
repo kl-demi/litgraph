@@ -1,9 +1,7 @@
 from collections.abc import Iterator
 from pathlib import Path
 
-import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-
+from spokebio.ingest._download import ensure_cached_file
 from spokebio.models import Pathway
 
 GO_OBO_URL = "https://purl.obolibrary.org/obo/go/go-basic.obo"
@@ -16,34 +14,13 @@ DEFAULT_OBO_PATH = "data/go-basic.obo"
 _BIOLOGICAL_PROCESS = "biological_process"
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
-
-
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_obo_file(path: str | Path = DEFAULT_OBO_PATH, force: bool = False) -> str:
     """Download go-basic.obo if it isn't already cached locally. Free, no license/API
     key needed (unlike PlantCyc/MetaCyc) -- a ~30MB one-time bulk download, refreshed
     only when ``force=True`` (GO cuts a new release periodically; this doesn't
     auto-detect staleness).
     """
-    p = Path(path)
-    if p.exists() and not force:
-        return str(p)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream("GET", GO_OBO_URL, follow_redirects=True, timeout=60.0) as response:
-        response.raise_for_status()
-        with p.open("wb") as f:
-            for chunk in response.iter_bytes():
-                f.write(chunk)
-    return str(p)
+    return ensure_cached_file(GO_OBO_URL, Path(path), force)
 
 
 def iter_term_stanzas(path: str | Path) -> Iterator[dict]:

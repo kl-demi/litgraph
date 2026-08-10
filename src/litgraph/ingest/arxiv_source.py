@@ -4,41 +4,9 @@ from datetime import UTC, datetime
 
 import arxiv
 
-from litgraph.db.neo4j_client import run_read, run_write
 from litgraph.models import Paper, Source, arxiv_category
 
 _VERSION_SUFFIX = re.compile(r"v\d+$")
-
-_GET_CHECKPOINT = """
-MATCH (s:IngestState {job: $job})
-RETURN s.last_seen_date AS last_seen_date
-"""
-
-_SET_CHECKPOINT = """
-MERGE (s:IngestState {job: $job})
-SET s.last_seen_date = $last_seen_date, s.last_run_at = $last_run_at
-"""
-
-
-def get_checkpoint(job: str = "arxiv_daily") -> datetime | None:
-    rows = run_read(_GET_CHECKPOINT, job=job)
-    if not rows or rows[0]["last_seen_date"] is None:
-        return None
-    value = rows[0]["last_seen_date"]
-    if hasattr(value, "to_native"):
-        return value.to_native()
-    if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    return value
-
-
-def set_checkpoint(last_seen_date: datetime, job: str = "arxiv_daily") -> None:
-    run_write(
-        _SET_CHECKPOINT,
-        job=job,
-        last_seen_date=last_seen_date.isoformat(),
-        last_run_at=datetime.now(UTC).isoformat(),
-    )
 
 
 def _strip_version(short_id: str) -> str:

@@ -1,4 +1,4 @@
-from spokebio.ingest.go import ensure_obo_file, extract_pathways, iter_term_stanzas
+from spokebio.ingest.go import GO_OBO_URL, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.models import Pathway
 from spokebio.upsert import upsert_pathways
 
@@ -61,64 +61,16 @@ def test_extract_pathways_keeps_only_non_obsolete_biological_process(tmp_path):
     ]
 
 
-def test_ensure_obo_file_skips_download_if_already_cached(tmp_path, mocker):
-    obo_file = tmp_path / "go-basic.obo"
-    obo_file.write_text(_OBO_FIXTURE)
-    mock_stream = mocker.patch("spokebio.ingest.go.httpx.stream")
+# Download mechanics (skip-if-cached, retry, force) are covered once for every
+# source in test_download.py; this only checks the URL/path wiring.
+def test_ensure_obo_file_wires_the_go_url(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.go.ensure_cached_file", return_value="path")
+    path = tmp_path / "go-basic.obo"
 
-    result = ensure_obo_file(obo_file)
+    result = ensure_obo_file(path, force=True)
 
-    assert result == str(obo_file)
-    mock_stream.assert_not_called()
-
-
-def test_ensure_obo_file_downloads_when_missing(tmp_path, mocker):
-    obo_file = tmp_path / "subdir" / "go-basic.obo"
-
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield _OBO_FIXTURE.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mocker.patch("spokebio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
-
-    result = ensure_obo_file(obo_file)
-
-    assert result == str(obo_file)
-    assert obo_file.read_text() == _OBO_FIXTURE
-
-
-def test_ensure_obo_file_force_redownloads(tmp_path, mocker):
-    obo_file = tmp_path / "go-basic.obo"
-    obo_file.write_text("stale content")
-
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield b"fresh content"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mock_stream = mocker.patch("spokebio.ingest.go.httpx.stream", return_value=FakeStreamResponse())
-
-    ensure_obo_file(obo_file, force=True)
-
-    mock_stream.assert_called_once()
-    assert obo_file.read_text() == "fresh content"
+    assert result == "path"
+    ensure_cached.assert_called_once_with(GO_OBO_URL, path, True)
 
 
 def test_upsert_pathways_writes_params(mocker):

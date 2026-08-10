@@ -2,8 +2,7 @@ import gzip
 from collections.abc import Iterator
 from pathlib import Path
 
-import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from spokebio.ingest._download import ensure_cached_file
 
 # NCBI publishes one file per organism under this directory -- free, no license/API
 # key needed. Confirmed live (2026-07-24): file is named "<Genus>_<species>.gene_info.gz",
@@ -13,18 +12,6 @@ DEFAULT_ORGANISM = "Arabidopsis_thaliana"
 DEFAULT_GENE_INFO_DIR = "data/gene_info"
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
-
-
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_gene_info_file(
     organism: str = DEFAULT_ORGANISM, dir_path: str | Path = DEFAULT_GENE_INFO_DIR, force: bool = False
 ) -> str:
@@ -32,16 +19,7 @@ def ensure_gene_info_file(
     LocusTag <-> Symbol/Synonym crosswalk -- if not already cached locally.
     """
     path = Path(dir_path) / f"{organism}.gene_info.gz"
-    if path.exists() and not force:
-        return str(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{GENE_INFO_BASE_URL}/{organism}.gene_info.gz"
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
-        response.raise_for_status()
-        with path.open("wb") as f:
-            for chunk in response.iter_bytes():
-                f.write(chunk)
-    return str(path)
+    return ensure_cached_file(f"{GENE_INFO_BASE_URL}/{organism}.gene_info.gz", path, force)
 
 
 def iter_gene_info_rows(path: str | Path) -> Iterator[dict]:

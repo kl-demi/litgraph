@@ -1,3 +1,4 @@
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -8,19 +9,22 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from litgraph.config import get_settings
 from litgraph.db.neo4j_client import chunked, run_read
 from litgraph.graph.upsert import apply_enrichment, set_paper_embeddings, upsert_papers
-from litgraph.ingest.arxiv_source import fetch_new_papers, get_checkpoint, set_checkpoint
+from litgraph.ingest.arxiv_source import fetch_new_papers
+from litgraph.ingest.checkpoint import get_checkpoint, set_checkpoint
 from litgraph.ingest.embeddings import embed_texts, paper_embedding_text
 from litgraph.ingest.kaggle_source import iter_kaggle_papers
 from litgraph.ingest.pubmed_baseline_source import iter_pubmed_baseline_papers
 from litgraph.ingest.pubmed_source import fetch_historical_papers as fetch_historical_pubmed_papers
 from litgraph.ingest.pubmed_source import fetch_new_papers as fetch_new_pubmed_papers
-from litgraph.ingest.pubmed_source import get_checkpoint as get_pubmed_checkpoint
-from litgraph.ingest.pubmed_source import set_checkpoint as set_pubmed_checkpoint
 from litgraph.ingest.semantic_scholar import SemanticScholarClient
 from litgraph.models import Paper
 from litgraph.run_log import log_run
 
 console = Console()
+
+# Job names for the two forward-cursor checkpoints (see ingest/checkpoint.py).
+_ARXIV_DAILY_JOB = "arxiv_daily"
+_PUBMED_DAILY_JOB = "pubmed_daily"
 
 
 def _progress(*, determinate: bool = True) -> Progress:
@@ -51,6 +55,57 @@ def _start_of_this_week() -> datetime:
     """Monday 00:00 UTC of the current week."""
     today_utc = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return today_utc - timedelta(days=today_utc.weekday())
+
+
+def _consume(
+    papers: Iterator[Paper],
+    *,
+    batch_size: int,
+    label: str,
+    determinate: bool = False,
+    total: int | None = None,
+    date_filter: Callable[[date], bool] = lambda _: True,
+) -> tuple[int, date | None, date | None]:
+    """Batch-embed-and-upsert an iterator of Paper, tracking count and the
+    earliest/latest ``published_date`` seen.
+
+    ``date_filter`` controls which dates count toward earliest/latest without
+    affecting whether a paper is ingested -- PubMed's daily fetch uses this to
+    keep a future-dated PubDate from advancing its checkpoint while still
+    upserting the paper (see docs/known_bugs.md).
+
+    Returns (total ingested, earliest published_date, latest published_date).
+    """
+    batch: list[Paper] = []
+    total_count = 0
+    earliest: date | None = None
+    latest: date | None = None
+
+    with _progress(determinate=determinate) as progress:
+        task = progress.add_task(label, total=total)
+
+        def flush() -> None:
+            nonlocal batch, total_count
+            if not batch:
+                return
+            _embed_and_upsert(batch)
+            total_count += len(batch)
+            progress.update(task, completed=total_count)
+            batch = []
+
+        for paper in papers:
+            batch.append(paper)
+            published = paper.published_date
+            if published is not None and date_filter(published):
+                if earliest is None or published < earliest:
+                    earliest = published
+                if latest is None or published > latest:
+                    latest = published
+            if len(batch) >= batch_size:
+                flush()
+        flush()
+
+    return total_count, earliest, latest
 
 
 def _embed_and_upsert(papers: list[Paper]) -> None:
@@ -84,32 +139,10 @@ def run_backload(
 ) -> int:
     """Stream the Kaggle snapshot, embed, and upsert matching papers. Returns count ingested."""
     started_at = datetime.now()
-    batch: list[Paper] = []
-    total = 0
-    earliest: date | None = None
-    latest: date | None = None
-
-    with _progress(determinate=limit is not None) as progress:
-        task = progress.add_task("Backloading papers", total=limit)
-        for paper in iter_kaggle_papers(
-            path, categories=categories, start_date=start_date, end_date=end_date, limit=limit
-        ):
-            batch.append(paper)
-            published = paper.published_date
-            if published is not None:
-                if earliest is None or published < earliest:
-                    earliest = published
-                if latest is None or published > latest:
-                    latest = published
-            if len(batch) >= batch_size:
-                _embed_and_upsert(batch)
-                total += len(batch)
-                progress.update(task, completed=total)
-                batch = []
-        if batch:
-            _embed_and_upsert(batch)
-            total += len(batch)
-            progress.update(task, completed=total)
+    papers = iter_kaggle_papers(path, categories=categories, start_date=start_date, end_date=end_date, limit=limit)
+    total, earliest, latest = _consume(
+        papers, batch_size=batch_size, label="Backloading papers", determinate=limit is not None, total=limit
+    )
 
     console.log(f"backload: done, {total} papers upserted, batch spans {earliest} to {latest}")
     log_run(
@@ -130,39 +163,20 @@ def run_backload(
 def run_daily_fetch(categories: list[str], batch_size: int = 200) -> int:
     """Fetch new papers since the last checkpoint, embed, and upsert. Returns count ingested."""
     started_at = datetime.now()
-    checkpoint = get_checkpoint()
+    checkpoint = get_checkpoint(_ARXIV_DAILY_JOB)
     since = checkpoint or _start_of_this_week()
     if checkpoint is None:
         console.log(f"fetch-daily: no checkpoint found, defaulting to start of this week ({since.isoformat()})")
     else:
         console.log(f"fetch-daily: last checkpoint = {since}")
 
-    batch: list[Paper] = []
-    total = 0
-    newest_seen: datetime | None = None
+    total, _earliest, latest = _consume(
+        fetch_new_papers(categories, since=since), batch_size=batch_size, label="Fetching new papers"
+    )
 
-    with _progress(determinate=False) as progress:
-        task = progress.add_task("Fetching new papers", total=None)
-        for paper in fetch_new_papers(categories, since=since):
-            batch.append(paper)
-            published = paper.published_date
-            if published is not None:
-                published_dt = datetime.combine(published, datetime.min.time())
-                if newest_seen is None or published_dt > newest_seen:
-                    newest_seen = published_dt
-            if len(batch) >= batch_size:
-                _embed_and_upsert(batch)
-                total += len(batch)
-                progress.update(task, completed=total)
-                batch = []
-
-        if batch:
-            _embed_and_upsert(batch)
-            total += len(batch)
-            progress.update(task, completed=total)
-
+    newest_seen = datetime.combine(latest, datetime.min.time()) if latest else None
     if newest_seen is not None:
-        set_checkpoint(newest_seen)
+        set_checkpoint(newest_seen, _ARXIV_DAILY_JOB)
     console.log(f"fetch-daily: done, {total} new papers upserted")
     log_run(
         "fetch-daily",
@@ -186,32 +200,12 @@ def run_backload_pubmed(
 ) -> int:
     """Stream NCBI's PubMed baseline files, embed, and upsert matching papers. Returns count ingested."""
     started_at = datetime.now()
-    batch: list[Paper] = []
-    total = 0
-    earliest: date | None = None
-    latest: date | None = None
-
-    with _progress(determinate=limit is not None) as progress:
-        task = progress.add_task("Backloading PubMed papers", total=limit)
-        for paper in iter_pubmed_baseline_papers(
-            dir_or_glob, mesh_terms=mesh_terms, start_date=start_date, end_date=end_date, limit=limit
-        ):
-            batch.append(paper)
-            published = paper.published_date
-            if published is not None:
-                if earliest is None or published < earliest:
-                    earliest = published
-                if latest is None or published > latest:
-                    latest = published
-            if len(batch) >= batch_size:
-                _embed_and_upsert(batch)
-                total += len(batch)
-                progress.update(task, completed=total)
-                batch = []
-        if batch:
-            _embed_and_upsert(batch)
-            total += len(batch)
-            progress.update(task, completed=total)
+    papers = iter_pubmed_baseline_papers(
+        dir_or_glob, mesh_terms=mesh_terms, start_date=start_date, end_date=end_date, limit=limit
+    )
+    total, earliest, latest = _consume(
+        papers, batch_size=batch_size, label="Backloading PubMed papers", determinate=limit is not None, total=limit
+    )
 
     console.log(f"backload-pubmed: done, {total} papers upserted, batch spans {earliest} to {latest}")
     log_run(
@@ -254,7 +248,7 @@ def run_backload_pubmed_api(
     checkpoint_job = f"pubmed_backload_api:{mesh_terms}"
     resumed_from: date | None = None
     if end_date is None:
-        checkpoint = get_pubmed_checkpoint(job=checkpoint_job)
+        checkpoint = get_checkpoint(checkpoint_job)
         if checkpoint is not None:
             resumed_from = checkpoint.date()
             end_date = resumed_from
@@ -287,7 +281,7 @@ def run_backload_pubmed_api(
             """
             nonlocal unreachable, windows_done
             flush()
-            set_pubmed_checkpoint(datetime.combine(resume_from, datetime.min.time()), job=checkpoint_job)
+            set_checkpoint(datetime.combine(resume_from, datetime.min.time()), checkpoint_job)
             windows_done += 1
             if skipped:
                 unreachable += skipped
@@ -343,7 +337,7 @@ def run_backload_pubmed_api(
 def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     """Fetch new PubMed papers since the last checkpoint, embed, and upsert. Returns count ingested."""
     started_at = datetime.now()
-    checkpoint = get_pubmed_checkpoint()
+    checkpoint = get_checkpoint(_PUBMED_DAILY_JOB)
     since = checkpoint or _start_of_this_week()
     if checkpoint is None:
         console.log(
@@ -352,35 +346,19 @@ def run_daily_fetch_pubmed(mesh_terms: str, batch_size: int = 200) -> int:
     else:
         console.log(f"fetch-daily-pubmed: last checkpoint = {since}")
 
-    batch: list[Paper] = []
-    total = 0
-    newest_seen: datetime | None = None
     today = datetime.now(UTC).date()
+    total, _earliest, latest = _consume(
+        fetch_new_pubmed_papers(mesh_terms, since=since),
+        batch_size=batch_size,
+        label="Fetching new PubMed papers",
+        # PubMed's PubDate is the journal issue's cover date, which can be dated
+        # months ahead and falsely push the checkpoint into the future.
+        date_filter=lambda published: published <= today,
+    )
 
-    with _progress(determinate=False) as progress:
-        task = progress.add_task("Fetching new PubMed papers", total=None)
-        for paper in fetch_new_pubmed_papers(mesh_terms, since=since):
-            batch.append(paper)
-            published = paper.published_date
-            # PubMed's PubDate is the journal issue's cover date, which can be
-            # dated months ahead and falsely push the checkpoint into the future
-            if published is not None and published <= today:
-                published_dt = datetime.combine(published, datetime.min.time())
-                if newest_seen is None or published_dt > newest_seen:
-                    newest_seen = published_dt
-            if len(batch) >= batch_size:
-                _embed_and_upsert(batch)
-                total += len(batch)
-                progress.update(task, completed=total)
-                batch = []
-
-        if batch:
-            _embed_and_upsert(batch)
-            total += len(batch)
-            progress.update(task, completed=total)
-
+    newest_seen = datetime.combine(latest, datetime.min.time()) if latest else None
     if newest_seen is not None:
-        set_pubmed_checkpoint(newest_seen)
+        set_checkpoint(newest_seen, _PUBMED_DAILY_JOB)
     console.log(f"fetch-daily-pubmed: done, {total} new papers upserted")
     log_run(
         "fetch-daily-pubmed",

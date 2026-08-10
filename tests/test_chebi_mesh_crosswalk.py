@@ -1,6 +1,9 @@
 import gzip
 
 from spokebio.ingest.chebi_mesh_crosswalk import (
+    BIOMAPPINGS_URL,
+    CHEBI_BASE_URL,
+    _DOWNLOAD_TIMEOUT,
     build_crosswalk,
     ensure_biomappings_file,
     ensure_chebi_file,
@@ -162,57 +165,35 @@ def test_build_crosswalk_drops_ambiguous_cas_bridge_matches(tmp_path):
     assert crosswalk["CHEBI:7"] == "mesh:D999999"
 
 
-def test_ensure_chebi_file_skips_download_if_cached(tmp_path, mocker):
-    path = tmp_path / "compounds.tsv.gz"
-    path.write_bytes(b"data")
-    mock_stream = mocker.patch("spokebio.ingest.chebi_mesh_crosswalk.httpx.stream")
+# Download mechanics are covered once for every source in test_download.py; these
+# only check the URL/path wiring, including the longer shared timeout these larger
+# files use.
+def test_ensure_chebi_file_wires_the_chebi_url(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.chebi_mesh_crosswalk.ensure_cached_file", return_value="path")
 
     result = ensure_chebi_file("compounds.tsv.gz", dir_path=tmp_path)
 
-    assert result == str(path)
-    mock_stream.assert_not_called()
-
-
-def test_ensure_mesh_file_uses_year_in_url(mocker, tmp_path):
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield b"data"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mock_stream = mocker.patch(
-        "spokebio.ingest.chebi_mesh_crosswalk.httpx.stream", return_value=FakeStreamResponse()
+    assert result == "path"
+    ensure_cached.assert_called_once_with(
+        f"{CHEBI_BASE_URL}/compounds.tsv.gz", tmp_path / "compounds.tsv.gz", False, _DOWNLOAD_TIMEOUT
     )
+
+
+def test_ensure_mesh_file_puts_the_year_in_the_url(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.chebi_mesh_crosswalk.ensure_cached_file", return_value="path")
 
     ensure_mesh_file("d2025.bin", year=2025, dir_path=tmp_path)
 
-    called_url = mock_stream.call_args.args[1]
+    called_url = ensure_cached.call_args.args[0]
     assert "2025" in called_url
 
 
-def test_ensure_biomappings_file_downloads_when_missing(tmp_path, mocker):
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield b"data"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mocker.patch("spokebio.ingest.chebi_mesh_crosswalk.httpx.stream", return_value=FakeStreamResponse())
+def test_ensure_biomappings_file_wires_the_biomappings_url(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.chebi_mesh_crosswalk.ensure_cached_file", return_value="path")
 
     result = ensure_biomappings_file(dir_path=tmp_path)
 
-    assert result == str(tmp_path / "positive.sssom.tsv")
+    assert result == "path"
+    ensure_cached.assert_called_once_with(
+        BIOMAPPINGS_URL, tmp_path / "positive.sssom.tsv", False, _DOWNLOAD_TIMEOUT
+    )

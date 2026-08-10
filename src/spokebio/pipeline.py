@@ -164,7 +164,7 @@ def run_reactome_ingest(
     PARTICIPATES_IN edges; and ChEBI2Reactome.txt's Pathway -> Compound associations as
     PRODUCES edges, resolved through the ChEBI<->MeSH crosswalk (see
     ingest/chebi_mesh_crosswalk.py -- only ~33.7% of referenced ChEBI ids resolve;
-    the rest are silently dropped, not a bug).
+    unresolved ones are dropped and counted, see ``dropped_unresolved`` below).
 
     Unlike the GO/PubTator pieces, this creates Gene/Compound nodes on demand (see
     upsert.py's docstrings) -- most of Reactome's human genes/compounds won't already
@@ -179,8 +179,11 @@ def run_reactome_ingest(
         "new_pathways": 0,
         "edges_processed": 0,
         "new_participates_in_edges": 0,
+        "dropped_duplicate_participates_in": 0,
         "produces_processed": 0,
         "new_produces_edges": 0,
+        "dropped_unresolved_produces": 0,
+        "dropped_duplicate_produces": 0,
     }
 
     with _progress() as progress:
@@ -203,11 +206,12 @@ def run_reactome_ingest(
         f"+{totals['new_pathways']} new Pathway nodes"
     )
 
-    edges = extract_participates_in(edges_path)
+    extraction = extract_participates_in(edges_path)
+    totals["dropped_duplicate_participates_in"] = extraction.dropped_duplicate
     with _progress() as progress:
-        task = progress.add_task("Writing PARTICIPATES_IN edges", total=len(edges))
+        task = progress.add_task("Writing PARTICIPATES_IN edges", total=len(extraction.edges))
         edge_batch: list[ParticipatesIn] = []
-        for edge in edges:
+        for edge in extraction.edges:
             edge_batch.append(edge)
             if len(edge_batch) >= batch_size:
                 totals["new_participates_in_edges"] += upsert_participates_in(edge_batch)
@@ -220,7 +224,9 @@ def run_reactome_ingest(
             progress.update(task, advance=len(edge_batch))
 
     console.log(
-        f"reactome-participates-in: processed {totals['edges_processed']} gene-pathway pairs, "
+        f"reactome-participates-in: {extraction.rows_considered} human gene-pathway rows -- "
+        f"{extraction.dropped_duplicate} duplicate pairs collapsed by evidence rank; "
+        f"processed {totals['edges_processed']} distinct pairs, "
         f"+{totals['new_participates_in_edges']} new PARTICIPATES_IN edges"
     )
 
@@ -231,11 +237,13 @@ def run_reactome_ingest(
     biomappings_path = ensure_biomappings_file(force=force_download)
     crosswalk = build_crosswalk(compounds_path, database_accession_path, [mesh_d_path, mesh_c_path], biomappings_path)
 
-    produces_edges = extract_produces(chebi_edges_path, crosswalk)
+    produces_extraction = extract_produces(chebi_edges_path, crosswalk)
+    totals["dropped_unresolved_produces"] = produces_extraction.dropped_unresolved
+    totals["dropped_duplicate_produces"] = produces_extraction.dropped_duplicate
     with _progress() as progress:
-        task = progress.add_task("Writing PRODUCES edges", total=len(produces_edges))
+        task = progress.add_task("Writing PRODUCES edges", total=len(produces_extraction.edges))
         produces_batch: list[Produces] = []
-        for edge in produces_edges:
+        for edge in produces_extraction.edges:
             produces_batch.append(edge)
             if len(produces_batch) >= batch_size:
                 totals["new_produces_edges"] += upsert_produces(produces_batch)
@@ -248,6 +256,10 @@ def run_reactome_ingest(
             progress.update(task, advance=len(produces_batch))
 
     console.log(
-        f"reactome-produces: processed {totals['produces_processed']} pathway-compound pairs, "
+        f"reactome-produces: {produces_extraction.rows_considered} human pathway-compound rows -- "
+        f"dropped {produces_extraction.dropped_unresolved} unresolvable to a Compound "
+        f"({produces_extraction.dropped_unresolved / max(produces_extraction.rows_considered, 1):.1%}), "
+        f"{produces_extraction.dropped_duplicate} duplicate pairs collapsed by evidence rank; "
+        f"processed {totals['produces_processed']} distinct pairs, "
         f"+{totals['new_produces_edges']} new PRODUCES edges"
     )

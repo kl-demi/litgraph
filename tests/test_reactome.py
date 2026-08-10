@@ -1,4 +1,5 @@
 from spokebio.ingest.reactome import (
+    REACTOME_BASE_URL,
     ensure_reactome_file,
     extract_human_pathways,
     extract_participates_in,
@@ -41,7 +42,7 @@ def test_extract_participates_in_filters_by_species_and_namespaces_gene_id(tmp_p
     path = tmp_path / "NCBI2Reactome.txt"
     path.write_text(_EDGES_FIXTURE)
 
-    edges = extract_participates_in(path)
+    edges = extract_participates_in(path).edges
 
     edge_by_pathway = {e.pathway_id: e for e in edges}
     assert set(edge_by_pathway) == {"R-HSA-1257604", "R-HSA-111448"}  # mouse row dropped
@@ -52,7 +53,7 @@ def test_extract_participates_in_prefers_higher_trust_evidence_code(tmp_path):
     path = tmp_path / "NCBI2Reactome.txt"
     path.write_text(_EDGES_FIXTURE)
 
-    edges = extract_participates_in(path)
+    edges = extract_participates_in(path).edges
 
     duplicated = next(e for e in edges if e.pathway_id == "R-HSA-1257604")
     assert duplicated.evidence_code == "TAS"  # not IEA, even though it appears second
@@ -62,9 +63,21 @@ def test_extract_participates_in_dedupes_to_one_edge_per_pair(tmp_path):
     path = tmp_path / "NCBI2Reactome.txt"
     path.write_text(_EDGES_FIXTURE)
 
-    edges = extract_participates_in(path)
+    edges = extract_participates_in(path).edges
 
     assert len(edges) == 2  # not 3 -- the TAS/IEA duplicate collapses to one
+
+
+def test_extract_participates_in_counts_considered_and_dropped_rows(tmp_path):
+    """The mouse row is excluded before `rows_considered`, matching gaf.py's convention
+    of only counting rows past the coarse species/aspect filter."""
+    path = tmp_path / "NCBI2Reactome.txt"
+    path.write_text(_EDGES_FIXTURE)
+
+    extraction = extract_participates_in(path)
+
+    assert extraction.rows_considered == 3  # 3 human rows; the mouse row isn't counted at all
+    assert extraction.dropped_duplicate == 1  # the IEA row, collapsed into the TAS one
 
 
 # CHEBI:16480 (nitric oxide) x R-HSA-1237112 appears twice with conflicting evidence
@@ -84,7 +97,7 @@ def test_extract_produces_resolves_via_crosswalk_and_filters_species(tmp_path):
     path = tmp_path / "ChEBI2Reactome.txt"
     path.write_text(_CHEBI_EDGES_FIXTURE)
 
-    edges = extract_produces(path, _CHEBI_CROSSWALK)
+    edges = extract_produces(path, _CHEBI_CROSSWALK).edges
 
     edge_by_pathway = {e.pathway_id: e for e in edges}
     # unresolvable compound and mouse-only row both dropped
@@ -96,7 +109,7 @@ def test_extract_produces_prefers_higher_trust_evidence_code(tmp_path):
     path = tmp_path / "ChEBI2Reactome.txt"
     path.write_text(_CHEBI_EDGES_FIXTURE)
 
-    edges = extract_produces(path, _CHEBI_CROSSWALK)
+    edges = extract_produces(path, _CHEBI_CROSSWALK).edges
 
     duplicated = next(e for e in edges if e.pathway_id == "R-HSA-1237112")
     assert duplicated.evidence_code == "TAS"
@@ -106,9 +119,22 @@ def test_extract_produces_dedupes_to_one_edge_per_pair(tmp_path):
     path = tmp_path / "ChEBI2Reactome.txt"
     path.write_text(_CHEBI_EDGES_FIXTURE)
 
-    edges = extract_produces(path, _CHEBI_CROSSWALK)
+    edges = extract_produces(path, _CHEBI_CROSSWALK).edges
 
     assert len(edges) == 2  # not 3 -- the TAS/IEA duplicate collapses to one
+
+
+def test_extract_produces_counts_considered_and_dropped_rows(tmp_path):
+    """The mouse row isn't counted at all (excluded before rows_considered); the
+    unresolvable-ChEBI row is human and counted, but dropped as unresolved."""
+    path = tmp_path / "ChEBI2Reactome.txt"
+    path.write_text(_CHEBI_EDGES_FIXTURE)
+
+    extraction = extract_produces(path, _CHEBI_CROSSWALK)
+
+    assert extraction.rows_considered == 4  # 4 human rows; the mouse row isn't counted at all
+    assert extraction.dropped_unresolved == 1  # CHEBI:99999999, no crosswalk entry
+    assert extraction.dropped_duplicate == 1  # the IEA row, collapsed into the TAS one
 
 
 def test_upsert_produces_writes_params(mocker):
@@ -133,39 +159,17 @@ def test_upsert_produces_noop_on_empty(mocker):
     assert mock_edges.call_args.args[1] == []
 
 
-def test_ensure_reactome_file_skips_download_if_already_cached(tmp_path, mocker):
-    path = tmp_path / "ReactomePathways.txt"
-    path.write_text(_PATHWAYS_FIXTURE)
-    mock_stream = mocker.patch("spokebio.ingest.reactome.httpx.stream")
+# Download mechanics are covered once for every source in test_download.py; this
+# only checks the URL/path wiring.
+def test_ensure_reactome_file_wires_the_filename_into_url_and_path(tmp_path, mocker):
+    ensure_cached = mocker.patch("spokebio.ingest.reactome.ensure_cached_file", return_value="path")
 
-    result = ensure_reactome_file("ReactomePathways.txt", dir_path=tmp_path)
+    result = ensure_reactome_file("ReactomePathways.txt", dir_path=tmp_path, force=True)
 
-    assert result == str(path)
-    mock_stream.assert_not_called()
-
-
-def test_ensure_reactome_file_downloads_when_missing(tmp_path, mocker):
-    dir_path = tmp_path / "reactome"
-
-    class FakeStreamResponse:
-        def raise_for_status(self):
-            pass
-
-        def iter_bytes(self):
-            yield _PATHWAYS_FIXTURE.encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            pass
-
-    mocker.patch("spokebio.ingest.reactome.httpx.stream", return_value=FakeStreamResponse())
-
-    result = ensure_reactome_file("ReactomePathways.txt", dir_path=dir_path)
-
-    assert result == str(dir_path / "ReactomePathways.txt")
-    assert (dir_path / "ReactomePathways.txt").read_text() == _PATHWAYS_FIXTURE
+    assert result == "path"
+    ensure_cached.assert_called_once_with(
+        f"{REACTOME_BASE_URL}/ReactomePathways.txt", tmp_path / "ReactomePathways.txt", True
+    )
 
 
 def test_upsert_pathways_still_works_for_reactome_source(mocker):

@@ -1,9 +1,8 @@
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
-import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-
+from spokebio.ingest._download import ensure_cached_file
 from spokebio.models import ParticipatesIn, Pathway, Produces
 
 REACTOME_BASE_URL = "https://reactome.org/download/current"
@@ -18,32 +17,10 @@ _HUMAN_SPECIES = "Homo sapiens"
 _EVIDENCE_RANK = {"TAS": 0, "IEA": 1}
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
-
-
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_reactome_file(filename: str, dir_path: str | Path = DEFAULT_REACTOME_DIR, force: bool = False) -> str:
     """Download one of Reactome's flat files (e.g. "ReactomePathways.txt",
     "NCBI2Reactome.txt") if not already cached locally."""
-    path = Path(dir_path) / filename
-    if path.exists() and not force:
-        return str(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{REACTOME_BASE_URL}/{filename}"
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
-        response.raise_for_status()
-        with path.open("wb") as f:
-            for chunk in response.iter_bytes():
-                f.write(chunk)
-    return str(path)
+    return ensure_cached_file(f"{REACTOME_BASE_URL}/{filename}", Path(dir_path) / filename, force)
 
 
 def _iter_tab_delimited_rows(path: str | Path, num_columns: int) -> Iterator[list[str]]:
@@ -66,50 +43,83 @@ def extract_human_pathways(path: str | Path) -> Iterator[Pathway]:
         yield Pathway(pathway_id=pathway_id, name=name, source_db="Reactome")
 
 
-def extract_participates_in(path: str | Path) -> list[ParticipatesIn]:
+class ParticipatesInExtraction(NamedTuple):
+    """Extracted edges plus counts of what got dropped on the way -- reported per run
+    rather than left to a docstring's numbers, since a change in drop rate is the main
+    signal that Reactome's file format or content shifted."""
+
+    edges: list[ParticipatesIn]
+    rows_considered: int
+    dropped_duplicate: int
+
+
+def extract_participates_in(path: str | Path) -> ParticipatesInExtraction:
     """Filter NCBI2Reactome.txt (gene_id, pathway_id, url, pathway_name, evidence_code,
     species) to Homo sapiens, deduping (gene, pathway) pairs by keeping the higher-trust
     evidence code when a pair appears via both (confirmed live: this happens for 4,076
-    pairs in the real file). Returns a materialized list, not a generator -- dedup needs
-    to see every row for a pair before it can decide which one wins.
+    pairs in the real file). ``edges`` is a materialized list, not a generator -- dedup
+    needs to see every row for a pair before it can decide which one wins.
     """
     best: dict[tuple[str, str], ParticipatesIn] = {}
+    rows_considered = dropped_duplicate = 0
     for gene_id, pathway_id, _url, _pathway_name, evidence_code, species in _iter_tab_delimited_rows(path, 6):
         if species != _HUMAN_SPECIES:
             continue
+        rows_considered += 1
         key = (gene_id, pathway_id)
         existing = best.get(key)
-        if existing is not None and _EVIDENCE_RANK.get(evidence_code, 99) >= _EVIDENCE_RANK.get(
-            existing.evidence_code, 99
-        ):
-            continue
+        if existing is not None:
+            dropped_duplicate += 1
+            if _EVIDENCE_RANK.get(evidence_code, 99) >= _EVIDENCE_RANK.get(existing.evidence_code, 99):
+                continue
         best[key] = ParticipatesIn(gene_id=f"ncbigene:{gene_id}", pathway_id=pathway_id, evidence_code=evidence_code)
-    return list(best.values())
+    return ParticipatesInExtraction(
+        edges=list(best.values()), rows_considered=rows_considered, dropped_duplicate=dropped_duplicate
+    )
 
 
-def extract_produces(path: str | Path, crosswalk: dict[str, str]) -> list[Produces]:
+class ProducesExtraction(NamedTuple):
+    """Extracted edges plus counts of what got dropped on the way -- see
+    ParticipatesInExtraction. ``dropped_unresolved`` is normally the large one: only
+    ~33.7% of Reactome's human ChEBI ids resolve through the ChEBI<->MeSH crosswalk.
+    """
+
+    edges: list[Produces]
+    rows_considered: int
+    dropped_unresolved: int
+    dropped_duplicate: int
+
+
+def extract_produces(path: str | Path, crosswalk: dict[str, str]) -> ProducesExtraction:
     """Filter ChEBI2Reactome.txt (chebi_id, pathway_id, url, pathway_name,
     evidence_code, species) to Homo sapiens, resolving each bare ChEBI id to an
-    existing Compound.compound_id via ``crosswalk`` (see chebi_mesh_crosswalk.py --
-    only ~33.7% of Reactome's human ChEBI ids resolve this way; unresolved ones are
-    silently dropped, since there's no other key to upsert a Compound against without
-    inventing a second, chebi:-namespaced identity for compounds already keyed by MeSH
-    id). Dedupes (compound, pathway) pairs by keeping the higher-trust evidence code
-    when a pair appears via both (same issue as extract_participates_in: confirmed
-    live, 1,056 duplicate pairs in the real file).
+    existing Compound.compound_id via ``crosswalk`` (see chebi_mesh_crosswalk.py).
+    Unresolved ids are dropped, since there's no other key to upsert a Compound
+    against without inventing a second, chebi:-namespaced identity for compounds
+    already keyed by MeSH id. Dedupes (compound, pathway) pairs by keeping the
+    higher-trust evidence code when a pair appears via both (same issue as
+    extract_participates_in: confirmed live, 1,056 duplicate pairs in the real file).
     """
     best: dict[tuple[str, str], Produces] = {}
+    rows_considered = dropped_unresolved = dropped_duplicate = 0
     for chebi_id, pathway_id, _url, _pathway_name, evidence_code, species in _iter_tab_delimited_rows(path, 6):
         if species != _HUMAN_SPECIES:
             continue
+        rows_considered += 1
         compound_id = crosswalk.get(f"CHEBI:{chebi_id}")
         if compound_id is None:
+            dropped_unresolved += 1
             continue
         key = (compound_id, pathway_id)
         existing = best.get(key)
-        if existing is not None and _EVIDENCE_RANK.get(evidence_code, 99) >= _EVIDENCE_RANK.get(
-            existing.evidence_code, 99
-        ):
-            continue
+        if existing is not None:
+            dropped_duplicate += 1
+            if _EVIDENCE_RANK.get(evidence_code, 99) >= _EVIDENCE_RANK.get(existing.evidence_code, 99):
+                continue
         best[key] = Produces(compound_id=compound_id, pathway_id=pathway_id, evidence_code=evidence_code)
-    return list(best.values())
+    return ProducesExtraction(
+        edges=list(best.values()),
+        rows_considered=rows_considered,
+        dropped_unresolved=dropped_unresolved,
+        dropped_duplicate=dropped_duplicate,
+    )

@@ -4,8 +4,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from spokebio.ingest._download import ensure_cached_file
 
 # All three confirmed live (2026-07-27), free, no license/API key needed.
 CHEBI_BASE_URL = "https://ftp.ebi.ac.uk/pub/databases/chebi/flat_files"
@@ -21,63 +20,32 @@ DEFAULT_BIOMAPPINGS_DIR = "data/biomappings"
 # Reactome's download/current/, this needs bumping to a newer year occasionally.
 DEFAULT_MESH_YEAR = 2025
 
+# Larger files than go.py/reactome.py's, hence the longer timeout than ensure_cached_file's default.
+_DOWNLOAD_TIMEOUT = 120.0
+
 _CAS_PATTERN = re.compile(r"^\d{2,7}-\d{2}-\d$")
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return isinstance(exc, httpx.TransportError)
-
-
-def _download(url: str, path: Path, force: bool) -> str:
-    if path.exists() and not force:
-        return str(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream("GET", url, follow_redirects=True, timeout=120.0) as response:
-        response.raise_for_status()
-        with path.open("wb") as f:
-            for chunk in response.iter_bytes():
-                f.write(chunk)
-    return str(path)
-
-
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_chebi_file(filename: str, dir_path: str | Path = DEFAULT_CHEBI_DIR, force: bool = False) -> str:
     """Download one of ChEBI's flat files (e.g. "compounds.tsv.gz",
     "database_accession.tsv.gz") if not already cached locally."""
-    return _download(f"{CHEBI_BASE_URL}/{filename}", Path(dir_path) / filename, force)
+    return ensure_cached_file(f"{CHEBI_BASE_URL}/{filename}", Path(dir_path) / filename, force, _DOWNLOAD_TIMEOUT)
 
 
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_mesh_file(
     filename: str, year: int = DEFAULT_MESH_YEAR, dir_path: str | Path = DEFAULT_MESH_DIR, force: bool = False
 ) -> str:
     """Download one of MeSH's per-year ASCII files (e.g. "d2025.bin", "c2025.bin").
     ``year`` will need bumping occasionally -- see DEFAULT_MESH_YEAR's note."""
-    return _download(f"{MESH_BASE_URL}/{year}/asciimesh/{filename}", Path(dir_path) / filename, force)
+    path = Path(dir_path) / filename
+    return ensure_cached_file(f"{MESH_BASE_URL}/{year}/asciimesh/{filename}", path, force, _DOWNLOAD_TIMEOUT)
 
 
-@retry(
-    retry=retry_if_exception(_is_retryable),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
 def ensure_biomappings_file(dir_path: str | Path = DEFAULT_BIOMAPPINGS_DIR, force: bool = False) -> str:
     """Download Biomappings' curated "positive" mappings (expert-reviewed exact
     matches across many ontology pairs, including ChEBI<->MeSH)."""
-    return _download(BIOMAPPINGS_URL, Path(dir_path) / "positive.sssom.tsv", force)
+    path = Path(dir_path) / "positive.sssom.tsv"
+    return ensure_cached_file(BIOMAPPINGS_URL, path, force, _DOWNLOAD_TIMEOUT)
 
 
 def _parse_chebi_id_to_accession(compounds_path: str | Path) -> dict[str, str]:
