@@ -212,3 +212,27 @@ def oldest_papers(limit: int = 10) -> list[dict]:
 def top_authors(limit: int = 10) -> list[dict]:
     """Authors with the most papers, by AUTHORED edge count."""
     return run_read(_TOP_AUTHORS, limit=limit)
+
+
+def type_counts() -> dict[str, dict[str, int]]:
+    """Live record count for every registered node and edge type.
+
+    Returns {"nodes": {name: count}, "edges": {name: count}}. A type registered but not
+    yet created in the database counts as 0. Covers whatever is registered at call time,
+    so importing `spokebio.schema_ext` first includes the biology types.
+    """
+    from litgraph.db.registry import registry
+
+    def count(name: str, is_edge: bool) -> int:
+        try:
+            if get_settings().graph_backend == "neo4j":
+                pattern = f"()-[x:{name}]->()" if is_edge else "(x:" + name + ")"
+                return run_read(f"MATCH {pattern} RETURN count(x) AS c")[0]["c"]
+            return arcadedb_http.run_query(f"SELECT count(*) AS c FROM `{name}`")[0]["c"]
+        except Exception:
+            return 0
+
+    return {
+        "nodes": {name: count(name, False) for name in registry.nodes},
+        "edges": {name: count(name, True) for name in registry.edges},
+    }
