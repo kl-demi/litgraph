@@ -142,7 +142,25 @@ class PubTatorClient:
             for doc in data.get("PubTator3", []):
                 pmid = str(doc.get("pmid"))
                 annotations = [
-                    ann for passage in doc.get("passages", []) 
+                    ann for passage in doc.get("passages", [])
                     for ann in passage.get("annotations", [])
                 ]
                 yield pmid, extract_mentions(annotations)
+
+
+class PubTatorExtractor:
+    """spokebio.extract.Extractor implementation backed by PubTatorClient."""
+
+    name = "pubtator3"
+    requires = ("pmid",)
+
+    def __init__(self, requests_per_second: float = 3.0) -> None:
+        self._requests_per_second = requests_per_second
+
+    def extract(self, papers: list[dict]) -> Iterator[tuple[str, list[EntityMention]]]:
+        pmid_to_paper_id = {p["pmid"]: p["id"] for p in papers}
+        with PubTatorClient(requests_per_second=self._requests_per_second) as client:
+            for pmid, mentions in client.fetch_mentions(list(pmid_to_paper_id)):
+                paper_id = pmid_to_paper_id.get(pmid)
+                if paper_id is not None:
+                    yield paper_id, mentions

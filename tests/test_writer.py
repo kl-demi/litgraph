@@ -66,8 +66,8 @@ def test_unregistered_row_keys_are_ignored(arcadedb):
 
 
 def test_nodes_key_comes_from_the_registry(arcadedb):
-    upsert_nodes("PubtatorChecked", [{"paper_id": "p1"}], update_existing=True)
-    assert "SELECT FROM PubtatorChecked WHERE paper_id = $r.paper_id" in _sql(arcadedb)
+    upsert_nodes("ExtractionChecked", [{"check_id": "x:p1"}], update_existing=True)
+    assert "SELECT FROM ExtractionChecked WHERE check_id = $r.check_id" in _sql(arcadedb)
 
 
 def test_update_existing_rewrites_properties_on_match(arcadedb):

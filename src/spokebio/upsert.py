@@ -5,11 +5,11 @@ Exports:
     upsert_participates_in / upsert_produces: annotation edges (bootstrap the entity
         endpoint, require the ontology one).
     upsert_mentions: Paper->entity MENTIONS edges plus the entity nodes themselves.
-    mark_papers_checked: PubtatorChecked bookkeeping nodes.
+    mark_papers_checked: per-extractor ExtractionChecked bookkeeping nodes.
     backfill_gene_names: Gene display-name maintenance.
 
-Usage: pipeline.py calls one upsert per extractor batch; each function maps its model
-objects to rows and picks the create/update policy for `litgraph.graph.writer`.
+Usage: extract.py/pipeline.py call one upsert per extractor batch; each function maps its
+model objects to rows and picks the create/update policy for `litgraph.graph.writer`.
 """
 
 from datetime import datetime
@@ -63,16 +63,19 @@ def upsert_produces(edges: list[Produces]) -> int:
     return upsert_edges("PRODUCES", rows, create_missing=CreateMissing.DST, update_existing=True)
 
 
-def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str | None = None) -> dict[str, int]:
+def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str) -> dict[str, int]:
     """Upsert Gene/Compound/Organism nodes and MENTIONS edges for a batch of papers.
 
     Neither endpoint is bootstrapped: an entity is written as a node in the pass above, and
     a paper that isn't in the graph isn't one this run should invent.
 
+    Conflict rule: when two extractors produce the same (paper, entity) edge, the first
+    writer wins -- `source` is set on creation only and edge properties are never updated,
+    so a re-run or second extractor can't take over the attribution.
+
     Args:
         paper_mentions: Paper.id -> the mentions found for it; an empty list means no edges.
-        source: Extractor that produced the edges, e.g. "pubtator3". Set on creation only,
-            so whichever extractor found a mention first keeps the attribution.
+        source: Extractor that produced the edges (`Extractor.name`), e.g. "pubtator3".
 
     Returns:
         dict[str, int]: Counts of newly created nodes and edges, plus genes named.
@@ -98,10 +101,10 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str 
                 stats["genes_named"] += backfill_gene_names({e.entity_id: e.name for e in found if e.name})
 
         if edges[target]:
-            rows = [{"src": paper_id, "dst": entity_id} for paper_id, entity_id in edges[target]]
-            if source:
-                for row in rows:
-                    row["source"] = source
+            rows = [
+                {"src": paper_id, "dst": entity_id, "source": source}
+                for paper_id, entity_id in edges[target]
+            ]
             stats["new_mention_edges"] += upsert_edges(
                 "MENTIONS", rows, create_missing=CreateMissing.NONE, update_existing=False, dst=target
             )
@@ -110,18 +113,20 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str 
 
 
 _MARK_CHECKED = """
-UNWIND $paper_ids AS pid
-MERGE (c:PubtatorChecked {paper_id: pid})
-ON CREATE SET c.checked_at = $checked_at
+UNWIND $rows AS row
+MERGE (c:ExtractionChecked {check_id: row.check_id})
+ON CREATE SET c.extractor = $extractor, c.paper_id = row.paper_id, c.checked_at = $checked_at
 """
 
 
-def mark_papers_checked(paper_ids: list[str], checked_at: datetime) -> None:
-    """Record that PubTator3 has been queried for these papers, so a re-run skips them
-    whether or not any mentions survived the filter."""
+def mark_papers_checked(extractor: str, paper_ids: list[str], checked_at: datetime) -> None:
+    """Record that `extractor` has been run against these papers, so a re-run skips them
+    whether or not any mentions survived the filter. Keyed per extractor, so a second
+    extractor still sees the paper as unchecked."""
     if not paper_ids:
         return
-    run_write(_MARK_CHECKED, paper_ids=paper_ids, checked_at=checked_at.isoformat())
+    rows = [{"check_id": f"{extractor}:{pid}", "paper_id": pid} for pid in paper_ids]
+    run_write(_MARK_CHECKED, rows=rows, extractor=extractor, checked_at=checked_at.isoformat())
 
 
 # Sets `name` only where it is currently null, so nothing already named is overwritten.

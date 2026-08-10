@@ -22,7 +22,11 @@ COMPOUND = NodeType("Compound", key="compound_id", props=(Prop("name"),), bootst
 
 # Bookkeeping node, kept as its own node rather than a Paper property so this never
 # has to write to a Paper vertex (see upsert.py's docstring on the ArcadeDB vector-index bug)
-PUBTATOR_CHECKED = NodeType("PubtatorChecked", key="paper_id")
+EXTRACTION_CHECKED = NodeType(
+    "ExtractionChecked",
+    key="check_id",  # "<extractor>:<paper_id>", so each extractor tracks its own coverage
+    props=(Prop("extractor"), Prop("paper_id", indexed=True)),
+)
 
 PATHWAY = NodeType("Pathway", key="pathway_id", props=(Prop("name"), Prop("source_db")))
 
@@ -34,7 +38,7 @@ register(
     ORGANISM,
     GENE,
     COMPOUND,
-    PUBTATOR_CHECKED,
+    EXTRACTION_CHECKED,
     PATHWAY,
     MENTIONS,
     PARTICIPATES_IN,
