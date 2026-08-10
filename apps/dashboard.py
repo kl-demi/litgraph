@@ -20,7 +20,14 @@ from litgraph.db.arcadedb_http import list_databases, run_query, run_raw
 from litgraph.db.context import set_database
 from litgraph.search.citations import get_citing_papers, get_references, most_cited
 from litgraph.search.entities import search_entities
-from litgraph.search.genes import co_mentioned_genes, papers_mentioning_gene, pathways_for_gene, search_genes
+from litgraph.search.genes import (
+    co_mentioned_genes,
+    get_gene,
+    papers_mentioning_gene,
+    pathways_for_gene,
+    search_genes,
+    traits_for_gene,
+)
 from litgraph.search.keyword import keyword_search
 from litgraph.search.papers import authors_of, categories_of, genes_in, get_paper
 from litgraph.search.semantic import semantic_search
@@ -35,6 +42,7 @@ _NODE_STYLE = {
     "Compound": ("#f3e8ff", "#7e22ce"),
     "Organism": ("#fef9c3", "#a16207"),
     "Category": ("#e5e7eb", "#4b5563"),
+    "Trait": ("#cffafe", "#0e7490"),
 }
 
 
@@ -46,6 +54,14 @@ def _md_escape(text: str) -> str:
 def _paper_url(paper_id: str) -> str:
     """A shareable in-app link to a paper, read back by the router at the bottom."""
     return f"?paper={quote(paper_id, safe='')}"
+
+
+def _gene_url(gene_id: str) -> str:
+    return f"?gene={quote(gene_id, safe='')}"
+
+
+def _link(label: str | None, url: str, fallback: str) -> str:
+    return f"[{_md_escape(label or fallback)}]({url})"
 
 
 def _dot(nodes: dict[str, tuple[str, str]], edges: list[tuple[str, str, str]]) -> str:
@@ -211,7 +227,12 @@ def page_search() -> None:
             with col.container(border=True):
                 st.markdown(f"**{label}s**")
                 for row in rows:
-                    st.markdown(f"{row['name']}")
+                    # Gene is the only entity type with a page so far; the rest stay plain
+                    # text rather than becoming links that go nowhere.
+                    if label == "Gene":
+                        st.markdown(_link(row["name"], _gene_url(row["id"]), row["id"]))
+                    else:
+                        st.markdown(_md_escape(row["name"] or row["id"]))
                     st.caption(row["id"])
 
     st.subheader("Papers")
@@ -311,7 +332,7 @@ def page_paper(paper_id: str) -> None:
 
     st.subheader(f"Genes mentioned ({len(genes)})")
     if genes:
-        st.write(", ".join(g["name"] or g["gene_id"] for g in genes))
+        st.markdown(", ".join(_link(g["name"], _gene_url(g["gene_id"]), g["gene_id"]) for g in genes))
     else:
         st.caption("No genes have been extracted from this paper yet.")
 
@@ -339,6 +360,91 @@ def page_paper(paper_id: str) -> None:
         st.subheader(f"Cited by ({len(citing)})")
         for row in citing:
             st.markdown(f"[{_md_escape(row.get('title') or row['id'])}]({_paper_url(row['id'])})")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _gene_bundle(db: str, gene_id: str) -> dict:
+    return {
+        "gene": get_gene(gene_id),
+        "papers": papers_mentioning_gene(gene_id, limit=25),
+        "pathways": pathways_for_gene(gene_id, limit=25),
+        "traits": traits_for_gene(gene_id, limit=25),
+        "co_mentioned": co_mentioned_genes(gene_id, limit=10),
+    }
+
+
+def page_gene(gene_id: str) -> None:
+    st.markdown("[← Back](?)")
+    data = _gene_bundle(st.session_state["db"], gene_id)
+    gene = data["gene"]
+    if gene is None:
+        st.error(f"No gene with id `{gene_id}` in this database.")
+        return
+
+    papers, pathways = data["papers"], data["pathways"]
+    traits, co_mentioned = data["traits"], data["co_mentioned"]
+
+    st.title(gene.get("name") or gene_id)
+    identifiers = [gene_id] + ([gene["locus_id"]] if gene.get("locus_id") else [])
+    st.caption(" · ".join(identifiers))
+
+    cols = st.columns(4)
+    cols[0].metric("Papers", len(papers))
+    cols[1].metric("Pathways", len(pathways))
+    cols[2].metric("Traits", len(traits))
+    cols[3].metric("Co-mentioned", len(co_mentioned))
+    st.caption("Counts reflect what this page loads, capped at 25 per section.")
+
+    nodes = {gene_id: (gene.get("name") or gene_id, "Gene")}
+    edges = []
+    for pathway in pathways[:8]:
+        nodes[pathway["pathway_id"]] = (_clip(pathway["name"], 28), "Pathway")
+        edges.append((gene_id, pathway["pathway_id"], pathway.get("evidence_code") or "PARTICIPATES_IN"))
+    for trait in traits[:8]:
+        nodes[trait["trait_id"]] = (_clip(trait["name"], 28), "Trait")
+        edges.append((gene_id, trait["trait_id"], "ASSOCIATED_WITH"))
+    for other in co_mentioned[:6]:
+        nodes[other["gene_id"]] = (other["name"] or other["gene_id"], "Gene")
+        edges.append((gene_id, other["gene_id"], f"co-mentioned ×{other['shared_papers']}"))
+    if edges:
+        st.graphviz_chart(_dot(nodes, edges), width="stretch")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader(f"Pathways ({len(pathways)})")
+        if pathways:
+            for row in pathways:
+                st.markdown(f"{row['name']}")
+                st.caption(f"{row['pathway_id']} · {row.get('source_db') or '?'} · {row.get('evidence_code') or 'no evidence code'}")
+        else:
+            st.caption("No pathway memberships recorded for this gene.")
+    with col2:
+        st.subheader(f"Traits ({len(traits)})")
+        if traits:
+            for row in traits:
+                st.markdown(f"{row['name']}")
+                st.caption(f"{row['trait_id']} · {row.get('source_db') or '?'}")
+        else:
+            st.caption("No trait associations in this database.")
+
+    st.subheader(f"Co-mentioned genes ({len(co_mentioned)})")
+    if co_mentioned:
+        st.markdown(
+            " · ".join(
+                f"{_link(row['name'], _gene_url(row['gene_id']), row['gene_id'])} ({row['shared_papers']})"
+                for row in co_mentioned
+            )
+        )
+    else:
+        st.caption("This gene shares no papers with another gene.")
+
+    st.subheader(f"Papers mentioning this gene ({len(papers)})")
+    if not papers:
+        st.caption("No papers mention this gene.")
+        return
+    for row in papers:
+        st.markdown(_link(row.get("title"), _paper_url(row["id"]), row["id"]))
+        st.caption(" · ".join(filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))))
 
 
 def page_citations() -> None:
@@ -582,7 +688,10 @@ page = st.sidebar.radio("LitGraph", list(_PAGES))
 # A ?paper=<id> link overrides the sidebar, so every paper has its own shareable URL
 # without also having to be a navigation destination.
 _paper_id = st.query_params.get("paper")
+_gene_id = st.query_params.get("gene")
 if _paper_id:
     page_paper(_paper_id)
+elif _gene_id:
+    page_gene(_gene_id)
 else:
     _PAGES[page]()
