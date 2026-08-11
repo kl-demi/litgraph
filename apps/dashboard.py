@@ -1,9 +1,9 @@
 """LitGraph dashboard: browse what's been ingested, run queries, see results as a graph.
 
-Pages: Search (entity matches + keyword/semantic paper search), Overview (coverage and
-corpus tables), Query (raw SQL/Cypher, like Studio's query tab), Database (type cards +
-schema detail). The Paper and Gene pages are reached from links rather than the sidebar,
-at ?paper=<id> and ?gene=<id>.
+Pages: Search (papers + raw SQL/Cypher tabs), Overview (coverage and corpus tables),
+Database (type cards + schema detail). Paper and Gene views are reached from links and
+canvas clicks, navigate in-session (same tab, Back restores where you were), and mirror
+to ?paper=<id> / ?gene=<id> so they stay shareable.
 
 Run with: streamlit run apps/dashboard.py
 """
@@ -11,7 +11,6 @@ Run with: streamlit run apps/dashboard.py
 import re
 import threading
 import time
-from urllib.parse import quote
 
 import httpx
 import streamlit as st
@@ -72,21 +71,60 @@ _NODE_STYLE = {
 
 
 def _md_escape(text: str) -> str:
-    """Escape the brackets that would otherwise break a markdown link label."""
+    """Escape the brackets that would otherwise be parsed as markdown in a label."""
     return text.replace("[", "\\[").replace("]", "\\]")
 
 
-def _paper_url(paper_id: str) -> str:
-    """A shareable in-app link to a paper, read back by the router at the bottom."""
-    return f"?paper={quote(paper_id, safe='')}"
+# In-session navigation. Markdown links to ?paper=... open a new tab and start a fresh
+# session (Streamlit hard-targets markdown links _blank), losing query results and the
+# db selection -- so internal navigation is widgets + session state instead, and the
+# current view is mirrored to the URL only for shareability. External links (PubMed,
+# DOI, arXiv) stay markdown links, where the new tab is wanted.
 
 
-def _gene_url(gene_id: str) -> str:
-    return f"?gene={quote(gene_id, safe='')}"
+def _nav_to(kind: str, entity_id: str) -> None:
+    """on_click/on_change callback: open an entity view, remembering where we came from."""
+    st.session_state.setdefault("nav_stack", []).append(st.session_state.get("view"))
+    st.session_state["view"] = (kind, entity_id)
 
 
-def _link(label: str | None, url: str, fallback: str) -> str:
-    return f"[{_md_escape(label or fallback)}]({url})"
+def _nav_back() -> None:
+    stack = st.session_state.get("nav_stack") or []
+    st.session_state["view"] = stack.pop() if stack else None
+
+
+def _reset_nav() -> None:
+    st.session_state["view"] = None
+    st.session_state["nav_stack"] = []
+
+
+def _entity_button(label: str | None, kind: str, entity_id: str, key: str, bold: bool = False) -> None:
+    """A link-styled button that navigates in-session to a Paper or Gene view."""
+    text = _md_escape(label or entity_id)
+    st.button(
+        f"**{text}**" if bold else text,
+        type="tertiary",
+        key=key,
+        on_click=_nav_to,
+        args=(kind, entity_id),
+    )
+
+
+def _gene_pills(genes: list[tuple[str | None, str]], key: str, label: str = "genes") -> None:
+    """Genes as clickable pills; selecting one opens its page. genes: (name, gene_id)."""
+    mapping: dict[str, str] = {}
+    for name, gene_id in genes:
+        text = name or gene_id
+        if text in mapping:  # gene names are not unique; disambiguate with the id
+            text = f"{text} · {gene_id}"
+        mapping[text] = gene_id
+
+    def _go() -> None:
+        choice = st.session_state.get(key)
+        if choice:
+            _nav_to("gene", mapping[choice])
+
+    st.pills(label, list(mapping), key=key, on_change=_go, label_visibility="collapsed")
 
 
 def _graph_canvas(
@@ -136,8 +174,7 @@ def _graph_canvas(
     target = str(event.get("data", {}).get("target_id", ""))
     kind = nodes.get(target, ("", ""))[1]
     if kind in ("Paper", "Gene"):
-        st.query_params.clear()
-        st.query_params["paper" if kind == "Paper" else "gene"] = target
+        _nav_to("paper" if kind == "Paper" else "gene", target)
         st.rerun()
 
 
@@ -341,8 +378,7 @@ def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
 
 
 def _paper_hit(row: dict, score_label: str) -> None:
-    title = _md_escape(row.get("title") or "Untitled")
-    st.markdown(f"**[{title}]({_paper_url(row['id'])})**")
+    _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}", bold=True)
     bits = []
     if row.get("pmid"):
         bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
@@ -356,13 +392,31 @@ def _paper_hit(row: dict, score_label: str) -> None:
         st.write(_clip(row["abstract"], 320))
 
 
-def page_search() -> None:
-    st.title("🔎 Search")
+@st.cache_data(ttl=300, show_spinner=False)
+def _concept_graph(db: str, papers: tuple[tuple[str, str], ...]) -> tuple[dict, list]:
+    """Result papers joined by the genes they mention: hits that share a gene cluster
+    together, which is the graph's explanation of why they belong to the same query."""
+    nodes: dict[str, tuple[str, str]] = {}
+    edges = []
+    for paper_id, title in papers:
+        nodes[paper_id] = (_clip(title, 30), "Paper")
+        for gene in genes_in(paper_id, limit=10):
+            nodes[gene["gene_id"]] = (gene["name"] or gene["gene_id"], "Gene")
+            edges.append((paper_id, gene["gene_id"], "MENTIONS"))
+    return nodes, edges
+
+
+def _papers_search() -> None:
     query = st.text_input(
         "Search",
+        value=st.session_state.get("search_text", ""),
         placeholder="a topic, a gene, a pathway…",
         label_visibility="collapsed",
+        key="search_box",
     ).strip()
+    # Copied out of widget state: navigating to a paper unmounts the widget (dropping
+    # its state), and this copy is what refills it on the way back.
+    st.session_state["search_text"] = query
     if not query:
         st.caption("Search papers by topic, or find a gene, pathway or trait by name.")
         return
@@ -382,13 +436,15 @@ def page_search() -> None:
                     # Gene is the only entity type with a page so far; the rest stay plain
                     # text rather than becoming links that go nowhere.
                     if label == "Gene":
-                        st.markdown(_link(row["name"], _gene_url(row["id"]), row["id"]))
+                        _entity_button(row["name"], "gene", row["id"], key=f"ent-{row['id']}")
                     else:
                         st.markdown(_md_escape(row["name"] or row["id"]))
                     st.caption(row["id"])
 
     st.subheader("Papers")
-    mode = st.radio("Mode", list(_SEARCH_MODES), horizontal=True, label_visibility="collapsed")
+    col_mode, col_view = st.columns(2)
+    mode = col_mode.radio("Mode", list(_SEARCH_MODES), horizontal=True, label_visibility="collapsed")
+    view = col_view.radio("View", ["List", "Graph"], horizontal=True, label_visibility="collapsed")
     _, score_label, help_text = _SEARCH_MODES[mode]
     st.caption(help_text)
 
@@ -408,9 +464,137 @@ def page_search() -> None:
         st.info("No papers matched. Try fewer words, or switch to semantic search.")
         return
     st.caption(f"{len(rows)} papers in {elapsed:.1f}s")
+
+    if view == "Graph":
+        with st.spinner("Linking papers through their genes…"):
+            nodes, edges = _concept_graph(db, tuple((r["id"], r.get("title") or "") for r in rows))
+        _graph_canvas(nodes, edges, key="search-graph", height=560)
+        st.caption(
+            "Result papers joined by the genes they mention — papers sharing a gene cluster "
+            "together. Click a paper or gene to open its page. A paper with no edges has no "
+            "extracted genes yet."
+        )
+        return
     for row in rows:
         st.divider()
         _paper_hit(row, score_label)
+
+
+def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
+    try:
+        payload = exc.response.json()
+        return payload.get("detail") or payload.get("error") or exc.response.text
+    except ValueError:
+        return exc.response.text
+
+
+_EDITOR_PLACEHOLDER = {
+    "sql": "select from Paper where is_stub = false limit 10",
+    "cypher": "MATCH (p:Paper)-[m:MENTIONS]->(g:Gene) RETURN p.title, g.name LIMIT 20",
+}
+
+
+def _query_editor(lang: str) -> None:
+    """One raw-query tab: editor, options, and persisted results. lang: 'sql' | 'cypher'."""
+    # The form gives ⌘/Ctrl+Enter submit for free.
+    with st.form(f"{lang}-form", border=False):
+        command = st.text_area(
+            "Statement",
+            value=st.session_state.get(f"{lang}_text", ""),
+            height=140,
+            placeholder=_EDITOR_PLACEHOLDER[lang],
+            key=f"{lang}_editor",
+            label_visibility="collapsed",
+        )
+        cols = st.columns([1, 1, 1, 3], vertical_alignment="bottom")
+        limit = cols[0].selectbox("Limit", [20, 50, 100, 500], index=1, key=f"{lang}_limit")
+        read_only = cols[1].toggle(
+            "Read-only",
+            value=True,
+            key=f"{lang}_ro",
+            help="On: query endpoint (rejects writes). Off: command endpoint.",
+        )
+        script = False
+        if lang == "sql":
+            script = cols[2].toggle(
+                "Script",
+                value=False,
+                key="sql_script",
+                help="Multi-statement SQLScript (BEGIN/IF/COMMIT); always runs on the command endpoint.",
+            )
+        submitted = st.form_submit_button("Run", type="primary")
+        st.caption("⌘/Ctrl+Enter also runs.")
+
+    if submitted and command.strip():
+        st.session_state[f"{lang}_text"] = command
+        language = "sqlscript" if script else ("opencypher" if lang == "cypher" else "sql")
+        started = time.perf_counter()
+        try:
+            rows = run_raw(command, language=language, read_only=read_only, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            st.session_state.pop(f"{lang}_result", None)
+            st.error(_http_error_detail(exc))
+            return
+        except httpx.HTTPError as exc:
+            st.session_state.pop(f"{lang}_result", None)
+            st.error(f"Request failed: {exc}")
+            return
+        # Results outlive the submit in session state: any later interaction (a tab
+        # switch, a canvas click) reruns the script with the form back to unsubmitted,
+        # and rendering only on submit would blank the results mid-exploration.
+        st.session_state[f"{lang}_result"] = {
+            "rows": rows,
+            "elapsed": time.perf_counter() - started,
+            "db": st.session_state["db"],
+        }
+
+    result = st.session_state.get(f"{lang}_result")
+    if result is None or result["db"] != st.session_state["db"]:
+        return
+    rows = result["rows"]
+
+    st.caption(f"{len(rows):,} rows in {result['elapsed']:.2f}s")
+    if not rows:
+        st.info("No results.")
+        return
+    tab_graph, tab_table, tab_json = st.tabs(["Graph", "Table", "JSON"])
+    with tab_graph:
+        graph = _result_graph(rows)
+        if graph is None:
+            if lang == "cypher":
+                st.info(
+                    "Cypher over HTTP returns plain property maps with no record identity, "
+                    "so its results can't be drawn — use the SQL tab for graph views."
+                )
+            else:
+                st.info(
+                    "Nothing to draw. A result is drawable when it holds whole records — "
+                    "`SELECT FROM Gene`, not `SELECT name FROM Gene`."
+                )
+        else:
+            nodes, edges, note = graph
+            _graph_canvas(nodes, edges, key=f"{lang}-result-graph", height=560)
+            st.caption("Drag to pan, scroll to zoom. Click a paper or gene to open its page.")
+            if note:
+                st.caption(note)
+    with tab_table:
+        try:
+            st.dataframe(rows, width="stretch")
+        except Exception:  # nested/mixed values a dataframe can't hold
+            st.warning("Result is not tabular; see the JSON tab.")
+    with tab_json:
+        st.json(rows)
+
+
+def page_search() -> None:
+    st.title("🔎 Search")
+    tab_papers, tab_sql, tab_cypher = st.tabs(["Papers", "SQL", "Cypher"])
+    with tab_papers:
+        _papers_search()
+    with tab_sql:
+        _query_editor("sql")
+    with tab_cypher:
+        _query_editor("cypher")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -427,7 +611,7 @@ def _paper_bundle(db: str, paper_id: str) -> dict:
 
 
 def page_paper(paper_id: str) -> None:
-    st.markdown("[← Back](?)")
+    st.button("← Back", type="tertiary", key="back-paper", on_click=_nav_back)
     data = _paper_bundle(st.session_state["db"], paper_id)
     paper = data["paper"]
     if paper is None:
@@ -484,7 +668,7 @@ def page_paper(paper_id: str) -> None:
 
     st.subheader(f"Genes mentioned ({len(genes)})")
     if genes:
-        st.markdown(", ".join(_link(g["name"], _gene_url(g["gene_id"]), g["gene_id"]) for g in genes))
+        _gene_pills([(g["name"], g["gene_id"]) for g in genes], key=f"paper-genes-{paper_id}")
     else:
         st.caption("No genes have been extracted from this paper yet.")
 
@@ -508,11 +692,11 @@ def page_paper(paper_id: str) -> None:
     with col1:
         st.subheader(f"References ({len(references)})")
         for row in references:
-            st.markdown(f"[{_md_escape(row.get('title') or row['id'])}]({_paper_url(row['id'])})")
+            _entity_button(row.get("title"), "paper", row["id"], key=f"ref-{row['id']}")
     with col2:
         st.subheader(f"Cited by ({len(citing)})")
         for row in citing:
-            st.markdown(f"[{_md_escape(row.get('title') or row['id'])}]({_paper_url(row['id'])})")
+            _entity_button(row.get("title"), "paper", row["id"], key=f"cit-{row['id']}")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -527,7 +711,7 @@ def _gene_bundle(db: str, gene_id: str) -> dict:
 
 
 def page_gene(gene_id: str) -> None:
-    st.markdown("[← Back](?)")
+    st.button("← Back", type="tertiary", key="back-gene", on_click=_nav_back)
     data = _gene_bundle(st.session_state["db"], gene_id)
     gene = data["gene"]
     if gene is None:
@@ -583,11 +767,9 @@ def page_gene(gene_id: str) -> None:
 
     st.subheader(f"Co-mentioned genes ({len(co_mentioned)})")
     if co_mentioned:
-        st.markdown(
-            " · ".join(
-                f"{_link(row['name'], _gene_url(row['gene_id']), row['gene_id'])} ({row['shared_papers']})"
-                for row in co_mentioned
-            )
+        _gene_pills(
+            [(f"{row['name'] or row['gene_id']} ({row['shared_papers']})", row["gene_id"]) for row in co_mentioned],
+            key=f"gene-co-{gene_id}",
         )
     else:
         st.caption("This gene shares no papers with another gene.")
@@ -597,90 +779,8 @@ def page_gene(gene_id: str) -> None:
         st.caption("No papers mention this gene.")
         return
     for row in papers:
-        st.markdown(_link(row.get("title"), _paper_url(row["id"]), row["id"]))
+        _entity_button(row.get("title"), "paper", row["id"], key=f"gp-{row['id']}")
         st.caption(" · ".join(filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))))
-
-
-_QUERY_LANGUAGES = {"SQL": "sql", "SQL Script": "sqlscript", "Cypher": "opencypher"}
-
-
-def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
-    try:
-        payload = exc.response.json()
-        return payload.get("detail") or payload.get("error") or exc.response.text
-    except ValueError:
-        return exc.response.text
-
-
-def page_query() -> None:
-    st.title("⌨️ Query")
-    col_lang, col_limit, col_ro = st.columns([2, 1, 1], vertical_alignment="bottom")
-    language = col_lang.selectbox("Language", list(_QUERY_LANGUAGES))
-    limit = col_limit.selectbox("Limit", [20, 50, 100, 500], index=1)
-    read_only = col_ro.toggle(
-        "Read-only",
-        value=True,
-        help="On: query endpoint (rejects writes). Off: command endpoint. "
-        "SQL Script always runs on the command endpoint.",
-    )
-    command = st.text_area(
-        "Statement",
-        height=140,
-        placeholder="select from Paper where is_stub = false limit 10",
-    )
-    # Results outlive the button press in session state: any later interaction (a tab
-    # switch, a canvas click) reruns the script with the button back to unpressed, and
-    # rendering only on press would blank the results mid-exploration.
-    if st.button("Run", type="primary") and command.strip():
-        lang = _QUERY_LANGUAGES[language]
-        started = time.perf_counter()
-        try:
-            rows = run_raw(command, language=lang, read_only=read_only, limit=limit)
-        except httpx.HTTPStatusError as exc:
-            st.session_state.pop("query_result", None)
-            st.error(_http_error_detail(exc))
-            return
-        except httpx.HTTPError as exc:
-            st.session_state.pop("query_result", None)
-            st.error(f"Request failed: {exc}")
-            return
-        st.session_state["query_result"] = {
-            "rows": rows,
-            "elapsed": time.perf_counter() - started,
-            "db": st.session_state["db"],
-        }
-
-    result = st.session_state.get("query_result")
-    if result is None or result["db"] != st.session_state["db"]:
-        return
-    rows = result["rows"]
-
-    st.caption(f"{len(rows):,} rows in {result['elapsed']:.2f}s")
-    if not rows:
-        st.info("No results.")
-        return
-    tab_graph, tab_table, tab_json = st.tabs(["Graph", "Table", "JSON"])
-    with tab_graph:
-        graph = _result_graph(rows)
-        if graph is None:
-            st.info(
-                "Nothing to draw. A result is drawable when it holds whole records — "
-                "`SELECT FROM Gene`, not `SELECT name FROM Gene`. Cypher returns plain property "
-                "maps with no record identity, so graph views need SQL."
-            )
-        else:
-            nodes, edges, note = graph
-            _graph_canvas(nodes, edges, key="query-graph", height=560)
-            st.caption("Drag to pan, scroll to zoom. Click a paper or gene to open its page.")
-            if note:
-                st.caption(note)
-    with tab_table:
-        try:
-            st.dataframe(rows, width="stretch")
-        except Exception:  # nested/mixed values a dataframe can't hold
-            st.warning("Result is not tabular; see the JSON tab.")
-    with tab_json:
-        st.json(rows)
 
 
 def _type_cards(rows: list[dict]) -> None:
@@ -765,7 +865,6 @@ def page_database() -> None:
 _PAGES = {
     "Search": page_search,
     "Overview": page_overview,
-    "Query": page_query,
     "Database": page_database,
 }
 
@@ -786,15 +885,25 @@ _db = st.sidebar.selectbox(
 st.session_state["db"] = _db
 set_database(_db)
 
-page = st.sidebar.radio("LitGraph", list(_PAGES))
+# Changing sidebar page while inside an entity view returns to the sidebar's pages.
+page = st.sidebar.radio("LitGraph", list(_PAGES), key="nav_page", on_change=_reset_nav)
 
-# A ?paper=<id> link overrides the sidebar, so every paper has its own shareable URL
-# without also having to be a navigation destination.
-_paper_id = st.query_params.get("paper")
-_gene_id = st.query_params.get("gene")
-if _paper_id:
-    page_paper(_paper_id)
-elif _gene_id:
-    page_gene(_gene_id)
+# Entity views live in session state (so navigation is same-tab and Back can restore
+# where you were); the URL only mirrors the view for sharing, and seeds it once when a
+# shared link starts a fresh session.
+if "view" not in st.session_state:
+    if st.query_params.get("paper"):
+        st.session_state["view"] = ("paper", st.query_params["paper"])
+    elif st.query_params.get("gene"):
+        st.session_state["view"] = ("gene", st.query_params["gene"])
+    else:
+        st.session_state["view"] = None
+    st.session_state.setdefault("nav_stack", [])
+
+_view = st.session_state["view"]
+if _view:
+    st.query_params.from_dict({_view[0]: _view[1]})
+    (page_paper if _view[0] == "paper" else page_gene)(_view[1])
 else:
+    st.query_params.clear()
     _PAGES[page]()
