@@ -32,6 +32,8 @@ from litgraph.search.genes import (
 )
 from litgraph.search.keyword import keyword_search
 from litgraph.search.papers import authors_of, categories_of, genes_in, get_paper
+from litgraph.search.pathways import compounds_produced, genes_in_pathway, get_pathway, papers_for_pathway
+from litgraph.search.traits import genes_for_trait, get_trait, papers_for_trait
 from litgraph.search.semantic import semantic_search
 from litgraph.search.stats import latest_papers, overview, top_authors, type_counts
 
@@ -93,6 +95,10 @@ def _md_escape(text: str) -> str:
 # db selection -- so internal navigation is widgets + session state instead, and the
 # current view is mirrored to the URL only for shareability. External links (PubMed,
 # DOI, arXiv) stay markdown links, where the new tab is wanted.
+
+
+# Node kinds with a page of their own -> the view name the router understands.
+_VIEW_KINDS = {"Paper": "paper", "Gene": "gene", "Pathway": "pathway", "Trait": "trait"}
 
 
 def _nav_to(kind: str, entity_id: str) -> None:
@@ -186,8 +192,8 @@ def _graph_canvas(
     st.session_state[handled_key] = event.get("timestamp")
     target = str(event.get("data", {}).get("target_id", ""))
     kind = nodes.get(target, ("", ""))[1]
-    if kind in ("Paper", "Gene"):
-        _nav_to("paper" if kind == "Paper" else "gene", target)
+    if kind in _VIEW_KINDS:
+        _nav_to(_VIEW_KINDS[kind], target)
         st.rerun()
 
 
@@ -446,10 +452,10 @@ def _papers_search() -> None:
             with col.container(border=True):
                 st.markdown(f"**{label}s**")
                 for row in rows:
-                    # Gene is the only entity type with a page so far; the rest stay plain
-                    # text rather than becoming links that go nowhere.
-                    if label == "Gene":
-                        _entity_button(row["name"], "gene", row["id"], key=f"ent-{row['id']}")
+                    # Compound has no page yet, so it stays plain text rather than
+                    # becoming a link that goes nowhere.
+                    if label in _VIEW_KINDS:
+                        _entity_button(row["name"], _VIEW_KINDS[label], row["id"], key=f"ent-{row['id']}")
                     else:
                         st.markdown(_md_escape(row["name"] or row["id"]))
                     st.caption(row["id"])
@@ -766,7 +772,7 @@ def page_gene(gene_id: str) -> None:
         st.subheader(f"Pathways ({len(pathways)})")
         if pathways:
             for row in pathways:
-                st.markdown(f"{row['name']}")
+                _entity_button(row["name"], "pathway", row["pathway_id"], key=f"gpw-{row['pathway_id']}")
                 st.caption(f"{row['pathway_id']} · {row.get('source_db') or '?'} · {row.get('evidence_code') or 'no evidence code'}")
         else:
             st.caption("No pathway memberships recorded for this gene.")
@@ -774,7 +780,7 @@ def page_gene(gene_id: str) -> None:
         st.subheader(f"Traits ({len(traits)})")
         if traits:
             for row in traits:
-                st.markdown(f"{row['name']}")
+                _entity_button(row["name"], "trait", row["trait_id"], key=f"gtr-{row['trait_id']}")
                 st.caption(f"{row['trait_id']} · {row.get('source_db') or '?'}")
         else:
             st.caption("No trait associations in this database.")
@@ -795,6 +801,108 @@ def page_gene(gene_id: str) -> None:
     for row in papers:
         _entity_button(row.get("title"), "paper", row["id"], key=f"gp-{row['id']}")
         st.caption(" · ".join(filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))))
+
+
+def _evidence_papers(papers: list[dict], key_prefix: str, thing: str) -> None:
+    """Papers reaching an entity through its genes, with how many genes each touches."""
+    st.subheader(f"Papers via genes ({len(papers)})")
+    if not papers:
+        st.caption(f"No papers mention any gene of this {thing}.")
+        return
+    for row in papers:
+        _entity_button(row.get("title"), "paper", row["id"], key=f"{key_prefix}-{row['id']}")
+        genes = row.get("gene_count") or 0
+        st.caption(f"touches {genes} gene{'s' if genes != 1 else ''} of this {thing}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _pathway_bundle(db: str, pathway_id: str) -> dict:
+    return {
+        "pathway": get_pathway(pathway_id),
+        "genes": genes_in_pathway(pathway_id, limit=25),
+        "compounds": compounds_produced(pathway_id, limit=15),
+        "papers": papers_for_pathway(pathway_id, limit=15),
+    }
+
+
+def page_pathway(pathway_id: str) -> None:
+    st.button("← Back", type="tertiary", key="back-pathway", on_click=_nav_back)
+    data = _pathway_bundle(st.session_state["db"], pathway_id)
+    pathway = data["pathway"]
+    if pathway is None:
+        st.error(f"No pathway with id `{pathway_id}` in this database.")
+        return
+
+    genes, compounds, papers = data["genes"], data["compounds"], data["papers"]
+    st.title(pathway.get("name") or pathway_id)
+    st.caption(" · ".join(filter(None, (pathway_id, pathway.get("source_db")))))
+
+    nodes = {pathway_id: (_clip(pathway.get("name"), 28), "Pathway")}
+    edges = []
+    for gene in genes[:12]:
+        nodes[gene["gene_id"]] = (gene["name"] or gene["gene_id"], "Gene")
+        edges.append((gene["gene_id"], pathway_id, gene.get("evidence_code") or "PARTICIPATES_IN"))
+    for compound in compounds[:8]:
+        nodes[compound["compound_id"]] = (_clip(compound["name"], 28), "Compound")
+        edges.append((pathway_id, compound["compound_id"], "PRODUCES"))
+    if edges:
+        _graph_canvas(nodes, edges, key=f"pathway-graph-{pathway_id}")
+        st.caption("Drag to pan, scroll to zoom. Click a gene to open its page.")
+
+    st.subheader(f"Genes ({len(genes)})")
+    if genes:
+        _gene_pills([(g["name"], g["gene_id"]) for g in genes], key=f"pathway-genes-{pathway_id}")
+    else:
+        st.caption("No genes recorded for this pathway.")
+
+    st.subheader(f"Compounds produced ({len(compounds)})")
+    if compounds:
+        for row in compounds:
+            st.markdown(_md_escape(row["name"] or row["compound_id"]))
+            st.caption(f"{row['compound_id']} · {row.get('evidence_code') or 'no evidence code'}")
+    else:
+        st.caption("No compounds recorded for this pathway.")
+
+    _evidence_papers(papers, f"pwp-{pathway_id}", "pathway")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _trait_bundle(db: str, trait_id: str) -> dict:
+    return {
+        "trait": get_trait(trait_id),
+        "genes": genes_for_trait(trait_id, limit=25),
+        "papers": papers_for_trait(trait_id, limit=15),
+    }
+
+
+def page_trait(trait_id: str) -> None:
+    st.button("← Back", type="tertiary", key="back-trait", on_click=_nav_back)
+    data = _trait_bundle(st.session_state["db"], trait_id)
+    trait = data["trait"]
+    if trait is None:
+        st.error(f"No trait with id `{trait_id}` in this database.")
+        return
+
+    genes, papers = data["genes"], data["papers"]
+    st.title(trait.get("name") or trait_id)
+    st.caption(" · ".join(filter(None, (trait_id, trait.get("source_db")))))
+
+    if genes:
+        nodes = {trait_id: (_clip(trait.get("name"), 28), "Trait")}
+        edges = []
+        for gene in genes[:12]:
+            nodes[gene["gene_id"]] = (gene["name"] or gene["gene_id"], "Gene")
+            edges.append((gene["gene_id"], trait_id, "ASSOCIATED_WITH"))
+        _graph_canvas(nodes, edges, key=f"trait-graph-{trait_id}")
+        st.caption("Drag to pan, scroll to zoom. Click a gene to open its page.")
+
+    st.subheader(f"Associated genes ({len(genes)})")
+    if genes:
+        _gene_pills([(g["name"], g["gene_id"]) for g in genes], key=f"trait-genes-{trait_id}")
+    else:
+        st.caption("No genes associated with this trait.")
+
+    _evidence_papers(papers, f"trp-{trait_id}", "trait")
 
 
 def _type_cards(rows: list[dict]) -> None:
@@ -902,22 +1010,22 @@ set_database(_db)
 # Changing sidebar page while inside an entity view returns to the sidebar's pages.
 page = st.sidebar.radio("LitGraph", list(_PAGES), key="nav_page", on_change=_reset_nav)
 
+_ENTITY_VIEWS = {"paper": page_paper, "gene": page_gene, "pathway": page_pathway, "trait": page_trait}
+
 # Entity views live in session state (so navigation is same-tab and Back can restore
 # where you were); the URL only mirrors the view for sharing, and seeds it once when a
 # shared link starts a fresh session.
 if "view" not in st.session_state:
-    if st.query_params.get("paper"):
-        st.session_state["view"] = ("paper", st.query_params["paper"])
-    elif st.query_params.get("gene"):
-        st.session_state["view"] = ("gene", st.query_params["gene"])
-    else:
-        st.session_state["view"] = None
+    st.session_state["view"] = next(
+        ((kind, st.query_params[kind]) for kind in _ENTITY_VIEWS if st.query_params.get(kind)),
+        None,
+    )
     st.session_state.setdefault("nav_stack", [])
 
 _view = st.session_state["view"]
 if _view:
     st.query_params.from_dict({_view[0]: _view[1]})
-    (page_paper if _view[0] == "paper" else page_gene)(_view[1])
+    _ENTITY_VIEWS[_view[0]](_view[1])
 else:
     st.query_params.clear()
     _PAGES[page]()
