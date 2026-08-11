@@ -130,8 +130,8 @@ st.markdown(
     /* Inside a card the tertiary button IS the title, so it carries heading weight and
        wraps like prose instead of being clipped to one line. */
     [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] {
-        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.08rem; font-weight: 650;
-        line-height: 1.3; white-space: normal; text-align: left; padding-top: 0.1rem;
+        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.45rem; font-weight: 650;
+        line-height: 1.25; white-space: normal; text-align: left; padding-top: 0.15rem;
     }
     [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] p {
         white-space: normal; font-size: inherit; font-weight: inherit; line-height: inherit;
@@ -575,15 +575,24 @@ def _hero_backdrop(db: str) -> str:
 
     width, height = 1200, 430
 
-    # The text occupies a column down the middle, so the keep-out is a vertical band
-    # rather than an ellipse: nodes are pushed left and right, framing the copy instead
-    # of sitting above and below it. The three smallest types are exempt and drift
-    # through the band at a fraction of the opacity -- a hard edge everywhere reads as
-    # a cordon, and a few faint nodes behind the text make the layer look continuous.
-    cx = width / 2
-    band = 385.0  # clears the subtitle, which is the widest line of copy
-    faint = set(sorted(names, key=lambda n: counts.get(n, 0))[:3])
-    framing = [n for n in names if n not in faint]
+    # Two forces shape this, and both are needed. The keep-out is an ellipse over the
+    # wordmark and subtitle only -- the two pieces of transparent copy; the search bar
+    # and chips below are opaque and hide whatever sits behind them. Gravity pulls
+    # every node toward that same centre, so they settle in a ring hugging the text.
+    #
+    # A wide vertical band was tried and reverted: pushing nodes past a hard x offset
+    # cleared the text but flung them to the frame edges, leaving a dead middle and
+    # reading as two unrelated groups rather than one cluster.
+    cx, cy = width / 2, 118.0
+    rx, ry = 350.0, 108.0
+
+    def _outside_text(x: float, y: float) -> tuple[float, float]:
+        dx, dy = (x - cx) / rx, (y - cy) / ry
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist >= 1.0:
+            return x, y
+        dist = max(dist, 0.15)
+        return cx + dx / dist * rx, cy + dy / dist * ry
 
     rng = random.Random(7)  # fixed seed: the backdrop should not reshuffle on rerun
     pos = {n: [rng.uniform(70, width - 70), rng.uniform(45, height - 45)] for n in names}
@@ -608,20 +617,19 @@ def _hero_backdrop(db: str) -> str:
             force[s][1] -= dy * f
             force[d][0] += dx * f
             force[d][1] += dy * f
-        for n in framing:  # steady sideways push out of the text column
-            offset = pos[n][0] - cx
-            if abs(offset) < band:
-                direction = 1.0 if offset >= 0 else -1.0
-                force[n][0] += direction * (band - abs(offset)) * 1.8
+        for n in names:  # gravity, so the cluster stays around the middle of the frame
+            force[n][0] += (cx - pos[n][0]) * 0.55
+            force[n][1] += (cy + 60 - pos[n][1]) * 0.55
         for n in names:
             fx, fy = force[n]
             mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
             step = min(mag, temperature)
             x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
-            y = min(height - 42, max(38, pos[n][1] + fy / mag * step))
-            if n in framing and abs(x - cx) < band:
-                x = cx + (band if x >= cx else -band)
-            pos[n][0], pos[n][1] = x, y
+            # Stop short of the frame's bottom: the last ~100 units sit under the
+            # caption below the chips, and a node label landing on that line is the
+            # one collision the opaque widgets don't hide.
+            y = min(330.0, max(38.0, pos[n][1] + fy / mag * step))
+            pos[n][0], pos[n][1] = _outside_text(x, y)
         temperature *= 0.97
 
     biggest = max(counts.get(n, 1) for n in names) or 1
@@ -642,8 +650,7 @@ def _hero_backdrop(db: str) -> str:
         radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
         x, y = pos[n]
         label_y = min(y + radius + 15, height - 8)  # keep rim labels inside the frame
-        # Nodes that sit behind the copy are drawn far lighter so the text stays first.
-        disc, core, text = (0.06, 0.18, 0.22) if n in faint else (0.15, 0.5, 0.55)
+        disc, core, text = 0.15, 0.5, 0.55
         parts.append(
             f'<g class="lg-drift" style="animation-delay:-{(i * 1.7) % 9:.1f}s">'
             f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="{disc}"/>'
