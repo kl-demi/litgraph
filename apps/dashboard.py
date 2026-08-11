@@ -127,6 +127,15 @@ st.markdown(
     .stButton button:hover, .stTabs button:hover { transition: all 160ms ease-out; }
     /* Tertiary buttons are our in-app links: read as links, not as chrome. */
     .stButton button[kind="tertiary"] { padding-left: 0; padding-right: 0; text-align: left; }
+    /* Inside a card the tertiary button IS the title, so it carries heading weight and
+       wraps like prose instead of being clipped to one line. */
+    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] {
+        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.08rem; font-weight: 650;
+        line-height: 1.3; white-space: normal; text-align: left; padding-top: 0.1rem;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] p {
+        white-space: normal; font-size: inherit; font-weight: inherit; line-height: inherit;
+    }
 
     /* The search field is the front door: give it presence over every other input.
        Scoped to the main area by data-testid rather than to the hero div -- Streamlit
@@ -189,6 +198,45 @@ def _entity_button(label: str | None, kind: str, entity_id: str, key: str, bold:
         on_click=_nav_to,
         args=(kind, entity_id),
     )
+
+
+def _kind_badge(kind: str, small: bool = False) -> str:
+    color = _KIND_COLOR.get(kind, _DEFAULT_KIND_COLOR)
+    size = "0.64rem" if small else "0.72rem"
+    return (
+        f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
+        f'font-size:{size}; font-weight:600; letter-spacing:.07em; text-transform:uppercase; '
+        f'padding:2px 8px; border-radius:3px">{kind}</span>'
+    )
+
+
+def _record_card(
+    kind: str,
+    title: str | None,
+    meta: str,
+    entity_id: str,
+    key: str,
+    view_kind: str | None = None,
+) -> None:
+    """One result as a card: type badge, then the title itself as the link, then
+    provenance. Used for every list on the entity pages so they read the same as
+    search results."""
+    with st.container(border=True):
+        st.markdown(_kind_badge(kind, small=True), unsafe_allow_html=True)
+        if view_kind:
+            _entity_button(title, view_kind, entity_id, key=key, bold=True)
+        else:
+            st.markdown(f"##### {_md_escape(title or entity_id)}")
+        if meta:
+            st.caption(meta)
+
+
+def _card_grid(items: list[dict], per_row: int = 2) -> None:
+    """Cards laid out in a grid. items: dicts of _record_card kwargs."""
+    for start in range(0, len(items), per_row):
+        for col, item in zip(st.columns(per_row), items[start : start + per_row]):
+            with col:
+                _record_card(**item)
 
 
 def _gene_pills(genes: list[tuple[str | None, str]], key: str, label: str = "genes") -> None:
@@ -257,7 +305,7 @@ def _node_detail(key: str, nodes: dict, meta: dict) -> None:
         st.caption(f"{field}: {value}")
     if kind in _VIEW_KINDS:
         st.button(
-            f"Open {kind.lower()} page →",
+            f"Visit {kind.lower()}",
             key=f"{key}--open",
             type="primary",
             on_click=_nav_to,
@@ -527,19 +575,15 @@ def _hero_backdrop(db: str) -> str:
 
     width, height = 1200, 430
 
-    # The hero copy and the search bar own the middle of the frame. An elliptical
-    # keep-out is enforced on every iteration -- not just at the end -- so mutual
-    # repulsion spreads the nodes along its rim instead of stacking them where a final
-    # projection happened to land. The graph reads as surrounding the text.
-    cx, cy, rx, ry = width / 2, 205.0, 455.0, 165.0
-
-    def _outside_keepout(x: float, y: float) -> tuple[float, float]:
-        dx, dy = (x - cx) / rx, (y - cy) / ry
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist >= 1.0:
-            return x, y
-        dist = max(dist, 0.12)
-        return cx + dx / dist * rx, cy + dy / dist * ry
+    # The text occupies a column down the middle, so the keep-out is a vertical band
+    # rather than an ellipse: nodes are pushed left and right, framing the copy instead
+    # of sitting above and below it. The three smallest types are exempt and drift
+    # through the band at a fraction of the opacity -- a hard edge everywhere reads as
+    # a cordon, and a few faint nodes behind the text make the layer look continuous.
+    cx = width / 2
+    band = 385.0  # clears the subtitle, which is the widest line of copy
+    faint = set(sorted(names, key=lambda n: counts.get(n, 0))[:3])
+    framing = [n for n in names if n not in faint]
 
     rng = random.Random(7)  # fixed seed: the backdrop should not reshuffle on rerun
     pos = {n: [rng.uniform(70, width - 70), rng.uniform(45, height - 45)] for n in names}
@@ -564,18 +608,27 @@ def _hero_backdrop(db: str) -> str:
             force[s][1] -= dy * f
             force[d][0] += dx * f
             force[d][1] += dy * f
+        for n in framing:  # steady sideways push out of the text column
+            offset = pos[n][0] - cx
+            if abs(offset) < band:
+                direction = 1.0 if offset >= 0 else -1.0
+                force[n][0] += direction * (band - abs(offset)) * 1.8
         for n in names:
             fx, fy = force[n]
             mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
             step = min(mag, temperature)
             x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
             y = min(height - 42, max(38, pos[n][1] + fy / mag * step))
-            pos[n][0], pos[n][1] = _outside_keepout(x, y)
+            if n in framing and abs(x - cx) < band:
+                x = cx + (band if x >= cx else -band)
+            pos[n][0], pos[n][1] = x, y
         temperature *= 0.97
 
     biggest = max(counts.get(n, 1) for n in names) or 1
     parts = [
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid slice" '
+        # `meet`, not `slice`: slice scales to cover and crops the overflow, which
+        # sheared the top off nodes sitting near the frame edge.
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" '
         'style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none">',
         '<g stroke="#1C1917" stroke-opacity="0.08" stroke-width="1.2">',
     ]
@@ -589,12 +642,14 @@ def _hero_backdrop(db: str) -> str:
         radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
         x, y = pos[n]
         label_y = min(y + radius + 15, height - 8)  # keep rim labels inside the frame
+        # Nodes that sit behind the copy are drawn far lighter so the text stays first.
+        disc, core, text = (0.06, 0.18, 0.22) if n in faint else (0.15, 0.5, 0.55)
         parts.append(
             f'<g class="lg-drift" style="animation-delay:-{(i * 1.7) % 9:.1f}s">'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="{disc}"/>'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="{core}"/>'
             f'<text x="{x:.0f}" y="{label_y:.0f}" text-anchor="middle" fill="{color}" '
-            f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
+            f'fill-opacity="{text}" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
         )
     parts.append("</svg>")
     return "".join(parts)
@@ -670,9 +725,24 @@ def page_home() -> None:
 
     st.divider()
     if pulse:
-        cols = st.columns(len(pulse))
-        for col, (name, count) in zip(cols, pulse):
-            col.metric(f"{name}s", f"{count:,}")
+        # One flex row rather than st.columns: equal columns leave the last metric
+        # left-aligned inside its share, so the strip stopped short of the charts'
+        # right edge. space-between pins the first and last to the content edges the
+        # charts below use. Each figure carries its type's colour as a rule.
+        cells = "".join(
+            f'<div style="flex:0 0 auto; border-top:3px solid '
+            f'{_KIND_COLOR.get(name, _DEFAULT_KIND_COLOR)}; padding-top:0.45rem">'
+            f'<div style="font-size:0.82rem; letter-spacing:.04em; text-transform:uppercase; '
+            f'opacity:0.6">{name}s</div>'
+            f'<div style="font-family:\'Bricolage Grotesque\', sans-serif; font-weight:700; '
+            f'font-size:2.1rem; line-height:1.1">{count:,}</div></div>'
+            for name, count in pulse
+        )
+        st.markdown(
+            f'<div style="display:flex; justify-content:space-between; align-items:flex-start; '
+            f'gap:1rem; margin:0.2rem 0 1.6rem">{cells}</div>',
+            unsafe_allow_html=True,
+        )
 
     try:
         types = _schema_types(db)
@@ -739,7 +809,7 @@ def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
 
 def _paper_hit(row: dict, score_label: str) -> None:
     with st.container(border=True):
-        st.markdown(f"#### {_md_escape(row.get('title') or 'Untitled')}")
+        _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}", bold=True)
         bits = []
         if row.get("pmid"):
             bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
@@ -751,7 +821,6 @@ def _paper_hit(row: dict, score_label: str) -> None:
             st.caption(" · ".join(bits))
         if row.get("abstract"):
             st.write(_clip(row["abstract"], 320))
-        _entity_button("Open paper →", "paper", row["id"], key=f"hit-{row['id']}")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -850,21 +919,16 @@ def _papers_search() -> None:
         flat = [(label, row) for label, rows in entities.items() for row in rows]
         for start in range(0, len(flat), 3):
             for col, (label, row) in zip(st.columns(3), flat[start : start + 3]):
-                with col.container(border=True):
-                    color = _KIND_COLOR.get(label, _DEFAULT_KIND_COLOR)
-                    st.markdown(
-                        f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
-                        f'font-size:0.68rem; font-weight:600; letter-spacing:.07em; '
-                        f'text-transform:uppercase; padding:2px 7px; border-radius:3px">{label}</span>',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(f"##### {_md_escape(row['name'] or row['id'])}")
-                    st.caption(row["id"])
+                with col:
                     # Compound has no page yet, so it gets a card but no link.
-                    if label in _VIEW_KINDS:
-                        _entity_button(
-                            "Open →", _VIEW_KINDS[label], row["id"], key=f"ent-{label}-{row['id']}"
-                        )
+                    _record_card(
+                        label,
+                        row["name"],
+                        row["id"],
+                        row["id"],
+                        key=f"ent-{label}-{row['id']}",
+                        view_kind=_VIEW_KINDS.get(label),
+                    )
 
     st.subheader("Papers")
     col_mode, col_view = st.columns(2)
@@ -1216,11 +1280,13 @@ def page_paper(paper_id: str) -> None:
     with col1:
         st.subheader(f"References ({len(references)})")
         for row in references:
-            _entity_button(row.get("title"), "paper", row["id"], key=f"ref-{row['id']}")
+            _record_card("Paper", row.get("title"), row["id"], row["id"],
+                         key=f"ref-{row['id']}", view_kind="paper")
     with col2:
         st.subheader(f"Cited by ({len(citing)})")
         for row in citing:
-            _entity_button(row.get("title"), "paper", row["id"], key=f"cit-{row['id']}")
+            _record_card("Paper", row.get("title"), row["id"], row["id"],
+                         key=f"cit-{row['id']}", view_kind="paper")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1289,16 +1355,30 @@ def page_gene(gene_id: str) -> None:
         st.subheader(f"Pathways ({len(pathways)})")
         if pathways:
             for row in pathways:
-                _entity_button(row["name"], "pathway", row["pathway_id"], key=f"gpw-{row['pathway_id']}")
-                st.caption(f"{row['pathway_id']} · {row.get('source_db') or '?'} · {row.get('evidence_code') or 'no evidence code'}")
+                _record_card(
+                    "Pathway",
+                    row["name"],
+                    " · ".join(
+                        filter(None, (row["pathway_id"], row.get("source_db"), row.get("evidence_code")))
+                    ),
+                    row["pathway_id"],
+                    key=f"gpw-{row['pathway_id']}",
+                    view_kind="pathway",
+                )
         else:
             st.caption("No pathway memberships recorded for this gene.")
     with col2:
         st.subheader(f"Traits ({len(traits)})")
         if traits:
             for row in traits:
-                _entity_button(row["name"], "trait", row["trait_id"], key=f"gtr-{row['trait_id']}")
-                st.caption(f"{row['trait_id']} · {row.get('source_db') or '?'}")
+                _record_card(
+                    "Trait",
+                    row["name"],
+                    " · ".join(filter(None, (row["trait_id"], row.get("source_db")))),
+                    row["trait_id"],
+                    key=f"gtr-{row['trait_id']}",
+                    view_kind="trait",
+                )
         else:
             st.caption("No trait associations in this database.")
 
@@ -1315,9 +1395,21 @@ def page_gene(gene_id: str) -> None:
     if not papers:
         st.caption("No papers mention this gene.")
         return
-    for row in papers:
-        _entity_button(row.get("title"), "paper", row["id"], key=f"gp-{row['id']}")
-        st.caption(" · ".join(filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))))
+    _card_grid(
+        [
+            {
+                "kind": "Paper",
+                "title": row.get("title"),
+                "meta": " · ".join(
+                    filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))
+                ),
+                "entity_id": row["id"],
+                "key": f"gp-{row['id']}",
+                "view_kind": "paper",
+            }
+            for row in papers
+        ]
+    )
 
 
 def _evidence_papers(papers: list[dict], key_prefix: str, thing: str) -> None:
@@ -1326,10 +1418,22 @@ def _evidence_papers(papers: list[dict], key_prefix: str, thing: str) -> None:
     if not papers:
         st.caption(f"No papers mention any gene of this {thing}.")
         return
-    for row in papers:
-        _entity_button(row.get("title"), "paper", row["id"], key=f"{key_prefix}-{row['id']}")
-        genes = row.get("gene_count") or 0
-        st.caption(f"touches {genes} gene{'s' if genes != 1 else ''} of this {thing}")
+    _card_grid(
+        [
+            {
+                "kind": "Paper",
+                "title": row.get("title"),
+                "meta": (
+                    f"touches {row.get('gene_count') or 0} "
+                    f"gene{'s' if (row.get('gene_count') or 0) != 1 else ''} of this {thing}"
+                ),
+                "entity_id": row["id"],
+                "key": f"{key_prefix}-{row['id']}",
+                "view_kind": "paper",
+            }
+            for row in papers
+        ]
+    )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1387,9 +1491,21 @@ def page_pathway(pathway_id: str) -> None:
 
     st.subheader(f"Compounds produced ({len(compounds)})")
     if compounds:
-        for row in compounds:
-            st.markdown(_md_escape(row["name"] or row["compound_id"]))
-            st.caption(f"{row['compound_id']} · {row.get('evidence_code') or 'no evidence code'}")
+        _card_grid(
+            [
+                {
+                    "kind": "Compound",
+                    "title": row["name"],
+                    "meta": " · ".join(
+                        filter(None, (row["compound_id"], row.get("evidence_code")))
+                    ),
+                    "entity_id": row["compound_id"],
+                    "key": f"pwc-{row['compound_id']}",
+                }
+                for row in compounds
+            ],
+            per_row=3,
+        )
     else:
         st.caption("No compounds recorded for this pathway.")
 
