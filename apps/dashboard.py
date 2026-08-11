@@ -1,9 +1,10 @@
 """LitGraph dashboard: browse what's been ingested, run queries, see results as a graph.
 
-Pages: Search (papers + raw SQL/Cypher tabs), Overview (coverage and corpus tables),
-Database (type cards + schema detail). Paper and Gene views are reached from links and
-canvas clicks, navigate in-session (same tab, Back restores where you were), and mirror
-to ?paper=<id> / ?gene=<id> so they stay shareable.
+Pages: Overview (coverage figures + a graph of the schema itself), Search (papers,
+entities, and raw SQL/Cypher), Database (type cards + schema detail). Paper, Gene,
+Pathway and Trait views are reached from links and canvas clicks, navigate in-session
+(same tab, Back restores where you were), and mirror to ?paper=<id> and friends so
+they stay shareable.
 
 Run with: streamlit run apps/dashboard.py
 """
@@ -12,7 +13,9 @@ import re
 import threading
 import time
 
+import altair as alt
 import httpx
+import pandas as pd
 import streamlit as st
 from st_link_analysis import EdgeStyle, Event, NodeStyle, st_link_analysis
 
@@ -225,30 +228,31 @@ def _node_detail(key: str, nodes: dict, meta: dict) -> None:
     """
     selected = st.session_state.get(f"{key}--sel")
     if not selected or selected not in nodes:
+        st.markdown("**Selection**")
         st.caption("Select a node to see its details.")
         return
 
     label, kind = nodes[selected]
     detail = meta.get(selected) or {}
-    with st.container(border=True):
-        color = _KIND_COLOR.get(kind, _DEFAULT_KIND_COLOR)
-        st.markdown(
-            f'<span style="color:{color}; font-weight:600; font-size:0.78rem; '
-            f'letter-spacing:.06em; text-transform:uppercase">{kind or "node"}</span>',
-            unsafe_allow_html=True,
+    color = _KIND_COLOR.get(kind, _DEFAULT_KIND_COLOR)
+    st.markdown(
+        f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
+        f'font-size:0.72rem; font-weight:600; letter-spacing:.07em; text-transform:uppercase; '
+        f'padding:2px 8px; border-radius:3px">{kind or "node"}</span>',
+        unsafe_allow_html=True,
+    )
+    # The canvas label is clipped to stay readable; the panel is where the full name goes.
+    st.markdown(f"#### {_md_escape(str(detail.get('name') or label))}")
+    for field, value in (detail.get("fields") or {}).items():
+        st.caption(f"{field}: {value}")
+    if kind in _VIEW_KINDS:
+        st.button(
+            f"Open {kind.lower()} page →",
+            key=f"{key}--open",
+            type="primary",
+            on_click=_nav_to,
+            args=(_VIEW_KINDS[kind], selected),
         )
-        # The canvas label is clipped to stay readable; the panel is where the full
-        # title belongs.
-        st.markdown(f"**{_md_escape(str(detail.get('name') or label))}**")
-        for field, value in (detail.get("fields") or {}).items():
-            st.caption(f"{field}: {value}")
-        if kind in _VIEW_KINDS:
-            st.button(
-                f"Open {kind.lower()} page →",
-                key=f"{key}--open",
-                on_click=_nav_to,
-                args=(_VIEW_KINDS[kind], selected),
-            )
 
 
 def _graph_canvas(
@@ -278,19 +282,17 @@ def _graph_canvas(
         EdgeStyle(label, caption="label", directed=True) for label in {e[2] or "" for e in edges}
     ]
 
-    # Full width, deliberately: inside a st.columns the canvas measures its container
-    # before the column has its final size, runs `fit` against that, and leaves the
-    # graph shrunk into a corner. The detail panel goes in the sidebar instead, which
-    # also keeps it visible while scrolling. One canvas per page, so it can own it.
-    event = st_link_analysis(
-        elements,
-        layout=_GRAPH_LAYOUT,
-        node_styles=node_styles,
-        edge_styles=edge_styles,
-        height=height,
-        key=key,
-        events=[Event("node_click", "click tap", "node")],
-    )
+    col_canvas, col_detail = st.columns([3, 1], gap="medium")
+    with col_canvas:
+        event = st_link_analysis(
+            elements,
+            layout=_GRAPH_LAYOUT,
+            node_styles=node_styles,
+            edge_styles=edge_styles,
+            height=height,
+            key=key,
+            events=[Event("node_click", "click tap", "node")],
+        )
 
     # The component's return value is its *last* event and replays on every rerun, so a
     # click is recorded once, by timestamp; otherwise returning to this page would
@@ -301,9 +303,7 @@ def _graph_canvas(
             st.session_state[handled_key] = event.get("timestamp")
             st.session_state[f"{key}--sel"] = str(event.get("data", {}).get("target_id", ""))
 
-    with st.sidebar:
-        st.divider()
-        st.caption("SELECTION")
+    with col_detail:
         _node_detail(key, nodes, meta or {})
 
 
@@ -324,9 +324,9 @@ def _node_label(record: dict) -> str:
     return record.get("@rid", "?")
 
 
-def _resolve_rids(rids: list[str]) -> dict[str, dict]:
+def _resolve_rids(rids: list[str], limit: int = _MAX_GRAPH_NODES) -> dict[str, dict]:
     """Fetch records an edge points at that the result itself didn't include."""
-    safe = [rid for rid in rids if _RID.match(rid)][:_MAX_GRAPH_NODES]
+    safe = [rid for rid in rids if _RID.match(rid)][:limit]
     if not safe:
         return {}
     try:
@@ -336,7 +336,7 @@ def _resolve_rids(rids: list[str]) -> dict[str, dict]:
     return {row["@rid"]: row for row in rows if row.get("@rid")}
 
 
-def _result_graph(rows: list[dict]) -> tuple[dict, list, dict, str] | None:
+def _result_graph(rows: list[dict], max_nodes: int = _MAX_GRAPH_NODES) -> tuple[dict, list, dict, str] | None:
     """Canvas nodes, edges and per-node metadata for a graph-shaped result, plus a note
     on anything left out.
 
@@ -352,12 +352,12 @@ def _result_graph(rows: list[dict]) -> tuple[dict, list, dict, str] | None:
         str(r[end]) for r in edge_rows for end in ("@out", "@in") if _RID.match(str(r.get(end, "")))
     }
     unresolved = sorted(endpoints - set(vertices))
-    vertices |= _resolve_rids(unresolved)
+    vertices |= _resolve_rids(unresolved, max_nodes)
     # Anything still unresolved is drawn by id, so its edges stay visible.
     for rid in endpoints - set(vertices):
         vertices[rid] = {"@rid": rid}
 
-    kept = dict(list(vertices.items())[:_MAX_GRAPH_NODES])
+    kept = dict(list(vertices.items())[:max_nodes])
     # Every field the record carries, minus the embedding (768 floats) and ArcadeDB's
     # own bookkeeping keys.
     skip = {"embedding", "@props", "@cat", "@in", "@out"}
@@ -429,6 +429,132 @@ def _coverage(label: str, part: int, whole: int, unit: str) -> None:
     """One labelled progress bar, stating the denominator it is a share of."""
     share = part / whole if whole else 0.0
     st.progress(share, text=f"**{label}** — {share:.1%}  ·  {part:,} of {whole:,} {unit}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _schema_graph(db: str) -> tuple[dict, list, dict]:
+    """The database's own shape: one node per type, sized by records, joined by the
+    edge types that actually connect them.
+
+    Endpoints are sampled rather than aggregated. `GROUP BY` over an edge type means a
+    full scan, which is 17.8M rows for CITES on lg2; 200 rows is instant and enough to
+    see which types an edge joins. A rare combination can therefore be missed.
+    """
+    types = {t["name"]: t for t in _schema_types(db)}
+    nodes: dict[str, tuple[str, str]] = {}
+    meta: dict[str, dict] = {}
+    edges: list[tuple[str, str, str]] = []
+
+    for name, spec in types.items():
+        if spec["type"] != "vertex" or not spec.get("records"):
+            continue
+        nodes[name] = (f"{name} · {spec['records']:,}", name)
+        meta[name] = node_meta(
+            name,
+            records=f"{spec['records']:,}",
+            properties=len(spec.get("properties", [])),
+            indexes=len(spec.get("indexes", [])),
+        )
+
+    for name, spec in types.items():
+        if spec["type"] != "edge" or not spec.get("records"):
+            continue
+        try:
+            rows = run_query(f"SELECT @out.@type AS src, @in.@type AS dst FROM {name} LIMIT 200")
+        except httpx.HTTPError:
+            continue
+        for src, dst in {(r.get("src"), r.get("dst")) for r in rows}:
+            if src in nodes and dst in nodes:
+                edges.append((src, dst, name))
+    return nodes, edges, meta
+
+
+def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
+    """Ranked horizontal bars on a symlog axis.
+
+    Counts here span five orders of magnitude -- 154,356 Authors against 1,587 Traits
+    against a 1-row GraphStats singleton -- so a linear axis renders everything below
+    the largest type as a hairline. Symlog rather than log because it is defined at
+    zero and one, which the singleton bookkeeping types are.
+    """
+    if not rows:
+        st.caption("Nothing to show.")
+        return
+    st.markdown(f"**{title}**")
+    frame = pd.DataFrame({"type": [r[0] for r in rows], "records": [r[1] for r in rows]})
+    chart = (
+        alt.Chart(frame)
+        .mark_bar(color=color, cornerRadiusEnd=2)
+        .encode(
+            x=alt.X("records:Q", scale=alt.Scale(type="symlog"), title="records (symlog)"),
+            y=alt.Y("type:N", sort="-x", title=None),
+            tooltip=["type", alt.Tooltip("records:Q", format=",")],
+        )
+        .properties(height=max(150, 26 * len(rows)))
+    )
+    st.altair_chart(chart, width="stretch")
+
+
+def page_overview() -> None:
+    db = st.session_state["db"]
+    st.title("Overview")
+    st.caption(f"Database · {db}")
+
+    data = _overview(db)
+    full, stubs = data["papers"], data["stubs"]
+    records = full + stubs
+
+    left, right = st.columns([2, 1])
+    with left:
+        st.markdown("**Paper coverage**")
+        _coverage("Full records", full, records, "Paper records")
+        _coverage("Enriched", data["enriched"], full, "full papers")
+        _coverage("Embedded", data["embedded"], full, "full papers")
+        st.caption(
+            "A stub is a placeholder created by a citation edge and holds a title at most, so it "
+            "can be neither enriched nor embedded. Both percentages are measured against full "
+            "papers rather than all records."
+        )
+    with right:
+        st.metric("Paper records", f"{records:,}")
+        st.metric("Full papers", f"{full:,}")
+        st.metric("Authors", f"{data['authors']:,}")
+
+    try:
+        types = _schema_types(db)
+    except httpx.HTTPError as exc:
+        st.error(f"Could not load schema: {exc}")
+        return
+    by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
+    node_rows = [(t["name"], t["records"]) for t in by_count if t["type"] == "vertex" and t.get("records")]
+    edge_rows = [(t["name"], t["records"]) for t in by_count if t["type"] == "edge" and t.get("records")]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        _figure("Nodes", node_rows, "#6F7F1F")
+    with col2:
+        _figure("Edges", edge_rows, "#B2643A")
+
+    st.subheader("Schema")
+    st.caption(
+        "Each node is a type, labelled with its record count; each edge is an edge type that "
+        "joins them. Endpoints are sampled from 200 edges per type."
+    )
+    try:
+        nodes, edges, meta = _schema_graph(db)
+    except httpx.HTTPError as exc:
+        st.error(f"Could not build the schema graph: {exc}")
+        return
+    if nodes:
+        _graph_canvas(nodes, edges, key=f"schema-graph-{db}", height=440, meta=meta)
+
+    st.divider()
+    st.button(
+        "Search the graph →",
+        type="primary",
+        key="goto-search",
+        on_click=lambda: st.session_state.__setitem__("nav_page", "Search"),
+    )
 
 
 def _coverage_tab() -> None:
@@ -507,18 +633,20 @@ def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
 
 
 def _paper_hit(row: dict, score_label: str) -> None:
-    _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}", bold=True)
-    bits = []
-    if row.get("pmid"):
-        bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
-    if row.get("arxiv_id"):
-        bits.append(f"[arXiv {row['arxiv_id']}](https://arxiv.org/abs/{row['arxiv_id']})")
-    if row.get("score") is not None:
-        bits.append(f"{score_label} {row['score']:.3f}")
-    if bits:
-        st.caption(" · ".join(bits))
-    if row.get("abstract"):
-        st.write(_clip(row["abstract"], 320))
+    with st.container(border=True):
+        st.markdown(f"#### {_md_escape(row.get('title') or 'Untitled')}")
+        bits = []
+        if row.get("pmid"):
+            bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
+        if row.get("arxiv_id"):
+            bits.append(f"[arXiv {row['arxiv_id']}](https://arxiv.org/abs/{row['arxiv_id']})")
+        if row.get("score") is not None:
+            bits.append(f"{score_label} {row['score']:.3f}")
+        if bits:
+            st.caption(" · ".join(bits))
+        if row.get("abstract"):
+            st.write(_clip(row["abstract"], 320))
+        _entity_button("Open paper →", "paper", row["id"], key=f"hit-{row['id']}")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -558,14 +686,8 @@ def _pulse(db: str) -> list[tuple[str, int]]:
 
 
 def _hero() -> None:
-    st.markdown(
-        '<div id="lg-hero">'
-        '<h1 style="margin-bottom:0.15em">Find what connects.</h1>'
-        '<p style="font-size:1.05rem; opacity:0.72; margin-top:0">'
-        "Search a literature knowledge graph by topic, gene, pathway or trait — "
-        "then follow the edges.</p></div>",
-        unsafe_allow_html=True,
-    )
+    st.title("Search")
+    st.caption("Papers by topic, or a gene, pathway, trait or compound by name or identifier.")
 
 
 def _papers_search() -> None:
@@ -603,18 +725,28 @@ def _papers_search() -> None:
         entities = {}
         st.caption(f"Entity lookup unavailable: {exc}")
     if entities:
-        cols = st.columns(len(entities))
-        for col, (label, rows) in zip(cols, entities.items()):
-            with col.container(border=True):
-                st.markdown(f"**{label}s**")
-                for row in rows:
-                    # Compound has no page yet, so it stays plain text rather than
-                    # becoming a link that goes nowhere.
-                    if label in _VIEW_KINDS:
-                        _entity_button(row["name"], _VIEW_KINDS[label], row["id"], key=f"ent-{row['id']}")
-                    else:
-                        st.markdown(_md_escape(row["name"] or row["id"]))
+        total = sum(len(rows) for rows in entities.values())
+        st.subheader(f"Entities ({total})")
+        # One card per match rather than a column of plain text per type: a match is a
+        # destination, and the type is the most useful thing to see first.
+        flat = [(label, row) for label, rows in entities.items() for row in rows]
+        for start in range(0, len(flat), 3):
+            for col, (label, row) in zip(st.columns(3), flat[start : start + 3]):
+                with col.container(border=True):
+                    color = _KIND_COLOR.get(label, _DEFAULT_KIND_COLOR)
+                    st.markdown(
+                        f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
+                        f'font-size:0.68rem; font-weight:600; letter-spacing:.07em; '
+                        f'text-transform:uppercase; padding:2px 7px; border-radius:3px">{label}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"##### {_md_escape(row['name'] or row['id'])}")
                     st.caption(row["id"])
+                    # Compound has no page yet, so it gets a card but no link.
+                    if label in _VIEW_KINDS:
+                        _entity_button(
+                            "Open →", _VIEW_KINDS[label], row["id"], key=f"ent-{label}-{row['id']}"
+                        )
 
     st.subheader("Papers")
     col_mode, col_view = st.columns(2)
@@ -647,12 +779,11 @@ def _papers_search() -> None:
             )
         _graph_canvas(nodes, edges, key="search-graph", height=560, meta=meta)
         st.caption(
-            "Result papers joined by the genes they mention — papers sharing a gene cluster "
-            "together. A paper with no edges has no extracted genes yet."
+            "Papers from these results, joined to the genes they mention. Papers with no edges "
+            "have no extracted genes."
         )
         return
     for row in rows:
-        st.divider()
         _paper_hit(row, score_label)
 
 
@@ -671,17 +802,19 @@ _EDITOR_PLACEHOLDER = {
 
 
 def _browser_behaviours() -> None:
-    """Two things Streamlit's Python API can't express, injected into the parent page.
+    """Three things Streamlit's Python API can't express, injected into the parent page.
 
     1. Tab or → fills an empty query editor with its placeholder, the way shell
        autocomplete accepts a suggestion. The value must go through React's own
        setter, or React never sees it and an empty statement gets submitted.
     2. The graph component measures its container on mount, before Streamlit has
        given the iframe its final width, and fits the graph to that stale size --
-       leaving it shrunk into a corner. Dispatching a resize at the iframe makes it
-       re-fit; a ResizeObserver keeps it right through window and sidebar changes.
+       leaving it shrunk into a corner. Dispatching a resize makes it re-fit.
+    3. The component's own detail drawer is hidden and its canvas matched to the page
+       background; neither is exposed through its Python API.
 
-    The iframe is same-origin, so reaching window.parent is permitted.
+    Both iframes are same-origin, so the parent document and the component's own
+    document are reachable.
     """
     st.iframe(
         """<script>
@@ -702,16 +835,12 @@ def _browser_behaviours() -> None:
             setValue(el, el.placeholder);
         }, true);
 
-        // Re-query every tick rather than holding a reference: Streamlit replaces the
-        // iframe element on rerun, and a captured handle goes stale and silently
-        // nudges a detached node. Bounded to the first few seconds after load -- a
-        // resize makes the graph re-fit, so running it forever would keep yanking the
-        // viewport back while someone is zoomed in.
-        // Only on a genuinely new graph. Every rerun reloads this script, and re-fitting
-        // each time would yank the viewport back mid-interaction -- worse, it moves the
+        // Re-fit, but only for a genuinely new graph. Every rerun reloads this script,
+        // and re-fitting each time yanks the viewport back mid-interaction and moves
         // nodes out from under the cursor. The view is mirrored into the query string,
-        // so that distinguishes "navigated somewhere new" from "clicked something here".
-        // The flag lives on the parent window, which survives reruns.
+        // which distinguishes "navigated somewhere new" from "clicked something here".
+        // The flag lives on the parent window, which survives reruns. The iframe is
+        // re-queried rather than captured: Streamlit replaces the element on rerun.
         const viewKey = W.location.search;
         if (W.__lgFitKey !== viewKey) {
             W.__lgFitKey = viewKey;
@@ -724,6 +853,27 @@ def _browser_behaviours() -> None:
                 });
             }, 1400);
         }
+
+        // The component ships its own detail drawer (#infopanel) -- the vertical "No
+        // selected elements" strip. It is not configurable from Python and duplicates
+        // our own panel, so it is hidden and the canvas background matched to the
+        // page. Same origin, so the component's document is reachable.
+        const styleGraphs = () => {
+            doc.querySelectorAll('iframe[src*="st_link_analysis"]').forEach((f) => {
+                let d;
+                try { d = f.contentDocument; } catch (err) { return; }
+                if (!d || !d.head || d.getElementById("lg-graph-style")) return;
+                const s = d.createElement("style");
+                s.id = "lg-graph-style";
+                s.textContent = `
+                    #infopanel, .infopanel { display: none !important; }
+                    body, #container, .container { background: #FBF9F5 !important; }
+                `;
+                d.head.appendChild(s);
+            });
+        };
+        styleGraphs();
+        new W.MutationObserver(styleGraphs).observe(doc.body, {childList: true, subtree: true});
         </script>""",
         height=1,  # st.iframe rejects 0; everything it does happens in the parent page
     )
@@ -735,9 +885,10 @@ def _query_editor(lang: str) -> None:
     with st.form(f"{lang}-form", border=False):
         # Options above the editor, Run right below it, wide columns so the toggle
         # labels don't wrap.
-        cols = st.columns([1, 1.5, 1.5, 2], vertical_alignment="bottom")
-        limit = cols[0].selectbox("Limit", [20, 50, 100, 500], index=1, key=f"{lang}_limit")
-        read_only = cols[1].toggle(
+        cols = st.columns([1, 1.2, 1.5, 1.5], vertical_alignment="bottom")
+        limit = cols[0].selectbox("Row limit", [20, 50, 100, 500], index=1, key=f"{lang}_limit")
+        cols[1].selectbox("Graph nodes", [30, 60, 120, 250], index=1, key=f"{lang}_maxnodes")
+        read_only = cols[2].toggle(
             "Read-only",
             value=True,
             key=f"{lang}_ro",
@@ -745,7 +896,7 @@ def _query_editor(lang: str) -> None:
         )
         script = False
         if lang == "sql":
-            script = cols[2].toggle(
+            script = cols[3].toggle(
                 "Script",
                 value=False,
                 key="sql_script",
@@ -795,7 +946,7 @@ def _query_editor(lang: str) -> None:
         return
     tab_graph, tab_table, tab_json = st.tabs(["Graph", "Table", "JSON"])
     with tab_graph:
-        graph = _result_graph(rows)
+        graph = _result_graph(rows, max_nodes=st.session_state.get(f"{lang}_maxnodes", _MAX_GRAPH_NODES))
         if graph is None:
             if lang == "cypher":
                 st.info(
@@ -810,7 +961,7 @@ def _query_editor(lang: str) -> None:
         else:
             nodes, edges, meta, note = graph
             _graph_canvas(nodes, edges, key=f"{lang}-result-graph", height=560, meta=meta)
-            st.caption("Drag to pan, scroll to zoom. Select a node for its full record.")
+            st.caption("Drag to pan, scroll to zoom. Select a node to see its record.")
             if note:
                 st.caption(note)
     with tab_table:
@@ -935,7 +1086,7 @@ def page_paper(paper_id: str) -> None:
             )
             edges.append((paper_id, category["code"], "IN_CATEGORY"))
         _graph_canvas(nodes, edges, key=f"paper-graph-{paper_id}", meta=meta)
-        st.caption("Drag to pan, scroll to zoom. Select a node for its details.")
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
 
     references, citing = data["references"], data["citing"]
     if not (references or citing):
@@ -1011,7 +1162,7 @@ def page_gene(gene_id: str) -> None:
         edges.append((gene_id, other["gene_id"], f"co-mentioned ×{other['shared_papers']}"))
     if edges:
         _graph_canvas(nodes, edges, key=f"gene-graph-{gene_id}", meta=meta)
-        st.caption("Drag to pan, scroll to zoom. Select a node for its details.")
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1106,7 +1257,7 @@ def page_pathway(pathway_id: str) -> None:
         edges.append((pathway_id, compound["compound_id"], "PRODUCES"))
     if edges:
         _graph_canvas(nodes, edges, key=f"pathway-graph-{pathway_id}", meta=meta)
-        st.caption("Drag to pan, scroll to zoom. Select a node for its details.")
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
 
     st.subheader(f"Genes ({len(genes)})")
     if genes:
@@ -1159,7 +1310,7 @@ def page_trait(trait_id: str) -> None:
             )
             edges.append((gene["gene_id"], trait_id, "ASSOCIATED_WITH"))
         _graph_canvas(nodes, edges, key=f"trait-graph-{trait_id}", meta=meta)
-        st.caption("Drag to pan, scroll to zoom. Select a node for its details.")
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
 
     st.subheader(f"Associated genes ({len(genes)})")
     if genes:
@@ -1186,12 +1337,11 @@ def _type_cards(rows: list[dict]) -> None:
 
 
 def page_graph() -> None:
-    """Everything *about* the graph, in one place. Coverage and schema were separate
-    pages that answered the same question -- what is in here -- and split the answer
-    across two sidebar entries for no reason a researcher would recognise."""
+    """Reference detail on the types themselves: counts, properties and indexes.
+    Headline figures live on Overview; this page is where the schema is inspected."""
     db = st.session_state["db"]
-    st.title("The graph")
-    st.caption(f"Database · {db}")
+    st.title("Database")
+    st.caption(f"{db} · types, properties and indexes")
     try:
         types = _schema_types(db)
     except httpx.HTTPError as exc:
@@ -1257,8 +1407,9 @@ def page_graph() -> None:
 
 
 _PAGES = {
-    "Explore": page_search,
-    "The graph": page_graph,
+    "Overview": page_overview,
+    "Search": page_search,
+    "Database": page_graph,
 }
 
 # The dashboard's own default, deliberately not ARCADEDB_DATABASE: cron reads that from

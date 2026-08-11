@@ -1,8 +1,17 @@
+## Web design
+
+- The landing page should give an overview of the database, with intuitive and easy
+to read graphs/figures rather than numbers. It should reports all relevant stats:
+total paper, number of paper embedded/enriched, node/edge counts, and a graph view of 
+the database itself. I'm imagining all the assets are nodes itself and hovering my mouse
+over them force the cluster to move around, but only a little bit
+- Then, there should be a noticeable entrance that leads to search/query, maybe a different 
+page.
+
 ## Graph rendering of query results
 
 ### Functional
 
-- Design the dashboard like a website: 
 - Node limit should be configurable.
 - Clicking on a node shows a sidebar in the graph itself containing its full name
 and an option to visit the full page for it. The graph itself already has this sidebar
