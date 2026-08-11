@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import httpx
 import streamlit as st
+from st_link_analysis import EdgeStyle, Event, NodeStyle, st_link_analysis
 
 import spokebio.schema_ext  # noqa: F401  -- registers bio types so type_counts sees them
 from litgraph.config import get_settings
@@ -64,23 +65,56 @@ def _link(label: str | None, url: str, fallback: str) -> str:
     return f"[{_md_escape(label or fallback)}]({url})"
 
 
-def _dot(nodes: dict[str, tuple[str, str]], edges: list[tuple[str, str, str]]) -> str:
-    """Build a DOT digraph. nodes: id -> (label, kind); edges: (src, dst, label)."""
-
-    def esc(text: str) -> str:
-        return text.replace("\\", "\\\\").replace('"', '\\"')
-
-    lines = [
-        "digraph G {",
-        '  rankdir=LR; bgcolor=transparent; node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10]; edge [fontname="Helvetica", fontsize=8, color=gray50];',
+def _graph_canvas(
+    nodes: dict[str, tuple[str, str]],
+    edges: list[tuple[str, str, str]],
+    key: str,
+    height: int = 480,
+) -> None:
+    """An interactive Cytoscape canvas: pan, zoom, drag; clicking a Paper or Gene node
+    opens its page. nodes: id -> (label, kind); edges: (src, dst, label)."""
+    elements = {
+        "nodes": [
+            {"data": {"id": node_id, "label": kind, "name": label}}
+            for node_id, (label, kind) in nodes.items()
+        ],
+        "edges": [
+            {"data": {"id": f"__edge-{i}", "source": src, "target": dst, "label": label or ""}}
+            for i, (src, dst, label) in enumerate(edges)
+        ],
+    }
+    node_styles = [
+        NodeStyle(kind, _NODE_STYLE.get(kind, ("", "#374151"))[1], caption="name")
+        for kind in {kind for _, kind in nodes.values()}
     ]
-    for node_id, (label, kind) in nodes.items():
-        fill, border = _NODE_STYLE.get(kind, ("#f3f4f6", "#374151"))
-        lines.append(f'  "{esc(node_id)}" [label="{esc(label)}", fillcolor="{fill}", color="{border}"];')
-    for src, dst, label in edges:
-        lines.append(f'  "{esc(src)}" -> "{esc(dst)}" [label="{esc(label)}"];')
-    lines.append("}")
-    return "\n".join(lines)
+    edge_styles = [
+        EdgeStyle(label, caption="label", directed=True) for label in {e[2] or "" for e in edges}
+    ]
+    event = st_link_analysis(
+        elements,
+        layout="cose",
+        node_styles=node_styles,
+        edge_styles=edge_styles,
+        height=height,
+        key=key,
+        events=[Event("node_click", "click tap", "node")],
+    )
+
+    # The component's return value is its *last* event and replays on every rerun, so a
+    # click is acted on once, by timestamp, or revisiting this page would re-trigger the
+    # navigation it caused.
+    if not (event and event.get("action") == "node_click"):
+        return
+    handled_key = f"{key}--handled"
+    if event.get("timestamp") == st.session_state.get(handled_key):
+        return
+    st.session_state[handled_key] = event.get("timestamp")
+    target = str(event.get("data", {}).get("target_id", ""))
+    kind = nodes.get(target, ("", ""))[1]
+    if kind in ("Paper", "Gene"):
+        st.query_params.clear()
+        st.query_params["paper" if kind == "Paper" else "gene"] = target
+        st.rerun()
 
 
 def _clip(text: str | None, n: int = 45) -> str:
@@ -117,8 +151,8 @@ def _resolve_rids(rids: list[str]) -> dict[str, dict]:
     return {row["@rid"]: row for row in rows if row.get("@rid")}
 
 
-def _result_graph(rows: list[dict]) -> tuple[str, str] | None:
-    """DOT for a graph-shaped result, plus a note on anything left out.
+def _result_graph(rows: list[dict]) -> tuple[dict, list, str] | None:
+    """Canvas nodes and edges for a graph-shaped result, plus a note on anything left out.
 
     Returns None when the rows carry no record identity — a projection such as
     `SELECT name FROM Gene`, or any Cypher result.
@@ -138,11 +172,18 @@ def _result_graph(rows: list[dict]) -> tuple[str, str] | None:
         vertices[rid] = {"@rid": rid}
 
     kept = dict(list(vertices.items())[:_MAX_GRAPH_NODES])
-    nodes = {rid: (_node_label(v), v.get("@type", "")) for rid, v in kept.items()}
+    # Nodes are keyed by natural id where one exists, so clicking a Paper or Gene on the
+    # canvas navigates to its page; a @rid is only a key of last resort. Edges arrive
+    # keyed by @rid either way and are remapped.
+    natural = {"Paper": "id", "Gene": "gene_id"}
+    rid_to_node = {
+        rid: str(v.get(natural.get(v.get("@type"), ""), "") or rid) for rid, v in kept.items()
+    }
+    nodes = {rid_to_node[rid]: (_node_label(v), v.get("@type", "")) for rid, v in kept.items()}
     edges = [
-        (str(r["@out"]), str(r["@in"]), r.get("@type", ""))
+        (rid_to_node[str(r["@out"])], rid_to_node[str(r["@in"])], r.get("@type", ""))
         for r in edge_rows
-        if str(r.get("@out")) in nodes and str(r.get("@in")) in nodes
+        if str(r.get("@out")) in rid_to_node and str(r.get("@in")) in rid_to_node
     ]
     if not nodes:
         return None
@@ -153,7 +194,7 @@ def _result_graph(rows: list[dict]) -> tuple[str, str] | None:
     hidden_edges = len(edge_rows) - len(edges)
     if hidden_edges:
         notes.append(f"{hidden_edges} edges hidden (an endpoint is outside the drawn nodes)")
-    return _dot(nodes, edges), "; ".join(notes).capitalize()
+    return nodes, edges, "; ".join(notes).capitalize()
 
 
 # The `db` argument on the cached helpers below is only a cache key: routing to the
@@ -432,7 +473,8 @@ def page_paper(paper_id: str) -> None:
         for category in categories[:8]:
             nodes[category["code"]] = (_clip(category["name"] or category["code"], 28), "Category")
             edges.append((paper_id, category["code"], "IN_CATEGORY"))
-        st.graphviz_chart(_dot(nodes, edges), width="stretch")
+        _graph_canvas(nodes, edges, key=f"paper-graph-{paper_id}")
+        st.caption("Drag to pan, scroll to zoom. Click a gene to open its page.")
 
     references, citing = data["references"], data["citing"]
     if not (references or citing):
@@ -494,7 +536,8 @@ def page_gene(gene_id: str) -> None:
         nodes[other["gene_id"]] = (other["name"] or other["gene_id"], "Gene")
         edges.append((gene_id, other["gene_id"], f"co-mentioned ×{other['shared_papers']}"))
     if edges:
-        st.graphviz_chart(_dot(nodes, edges), width="stretch")
+        _graph_canvas(nodes, edges, key=f"gene-graph-{gene_id}")
+        st.caption("Drag to pan, scroll to zoom. Click a gene to open its page.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -561,22 +604,34 @@ def page_query() -> None:
         height=140,
         placeholder="select from Paper where is_stub = false limit 10",
     )
-    if not (st.button("Run", type="primary") and command.strip()):
-        return
+    # Results outlive the button press in session state: any later interaction (a tab
+    # switch, a canvas click) reruns the script with the button back to unpressed, and
+    # rendering only on press would blank the results mid-exploration.
+    if st.button("Run", type="primary") and command.strip():
+        lang = _QUERY_LANGUAGES[language]
+        started = time.perf_counter()
+        try:
+            rows = run_raw(command, language=lang, read_only=read_only, limit=limit)
+        except httpx.HTTPStatusError as exc:
+            st.session_state.pop("query_result", None)
+            st.error(_http_error_detail(exc))
+            return
+        except httpx.HTTPError as exc:
+            st.session_state.pop("query_result", None)
+            st.error(f"Request failed: {exc}")
+            return
+        st.session_state["query_result"] = {
+            "rows": rows,
+            "elapsed": time.perf_counter() - started,
+            "db": st.session_state["db"],
+        }
 
-    lang = _QUERY_LANGUAGES[language]
-    started = time.perf_counter()
-    try:
-        rows = run_raw(command, language=lang, read_only=read_only, limit=limit)
-    except httpx.HTTPStatusError as exc:
-        st.error(_http_error_detail(exc))
+    result = st.session_state.get("query_result")
+    if result is None or result["db"] != st.session_state["db"]:
         return
-    except httpx.HTTPError as exc:
-        st.error(f"Request failed: {exc}")
-        return
-    elapsed = time.perf_counter() - started
+    rows = result["rows"]
 
-    st.caption(f"{len(rows):,} rows in {elapsed:.2f}s")
+    st.caption(f"{len(rows):,} rows in {result['elapsed']:.2f}s")
     if not rows:
         st.info("No results.")
         return
@@ -590,8 +645,9 @@ def page_query() -> None:
                 "maps with no record identity, so graph views need SQL."
             )
         else:
-            dot, note = graph
-            st.graphviz_chart(dot, width="stretch")
+            nodes, edges, note = graph
+            _graph_canvas(nodes, edges, key="query-graph", height=560)
+            st.caption("Drag to pan, scroll to zoom. Click a paper or gene to open its page.")
             if note:
                 st.caption(note)
     with tab_table:
