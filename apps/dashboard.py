@@ -37,6 +37,19 @@ from litgraph.search.stats import latest_papers, overview, top_authors, type_cou
 
 st.set_page_config(page_title="LitGraph", page_icon="📚", layout="wide")
 
+# Streamlit's built-in form hint ("Press ⌘+Enter to submit form") isn't configurable;
+# reword it for the query editors only. Scoped to stTextArea so the search box's own
+# "Press Enter to apply" hint is left alone.
+st.markdown(
+    """<style>
+    .stTextArea [data-testid="InputInstructions"] > span { visibility: hidden; }
+    .stTextArea [data-testid="InputInstructions"] > span::after {
+        visibility: visible; float: right; content: "Press ⌘/Ctrl+Enter to run";
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 
 @st.cache_resource(show_spinner=False)
 def _warm_embedding_service() -> bool:
@@ -489,7 +502,7 @@ def _http_error_detail(exc: httpx.HTTPStatusError) -> str:
 
 
 _EDITOR_PLACEHOLDER = {
-    "sql": "select from Paper where is_stub = false limit 10",
+    "sql": "SELECT FROM Paper WHERE is_stub = false LIMIT 10",
     "cypher": "MATCH (p:Paper)-[m:MENTIONS]->(g:Gene) RETURN p.title, g.name LIMIT 20",
 }
 
@@ -498,15 +511,9 @@ def _query_editor(lang: str) -> None:
     """One raw-query tab: editor, options, and persisted results. lang: 'sql' | 'cypher'."""
     # The form gives ⌘/Ctrl+Enter submit for free.
     with st.form(f"{lang}-form", border=False):
-        command = st.text_area(
-            "Statement",
-            value=st.session_state.get(f"{lang}_text", ""),
-            height=140,
-            placeholder=_EDITOR_PLACEHOLDER[lang],
-            key=f"{lang}_editor",
-            label_visibility="collapsed",
-        )
-        cols = st.columns([1, 1, 1, 3], vertical_alignment="bottom")
+        # Options above the editor, Run right below it, wide columns so the toggle
+        # labels don't wrap.
+        cols = st.columns([1, 1.5, 1.5, 2], vertical_alignment="bottom")
         limit = cols[0].selectbox("Limit", [20, 50, 100, 500], index=1, key=f"{lang}_limit")
         read_only = cols[1].toggle(
             "Read-only",
@@ -522,8 +529,15 @@ def _query_editor(lang: str) -> None:
                 key="sql_script",
                 help="Multi-statement SQLScript (BEGIN/IF/COMMIT); always runs on the command endpoint.",
             )
+        command = st.text_area(
+            "Statement",
+            value=st.session_state.get(f"{lang}_text", ""),
+            height=140,
+            placeholder=_EDITOR_PLACEHOLDER[lang],
+            key=f"{lang}_editor",
+            label_visibility="collapsed",
+        )
         submitted = st.form_submit_button("Run", type="primary")
-        st.caption("⌘/Ctrl+Enter also runs.")
 
     if submitted and command.strip():
         st.session_state[f"{lang}_text"] = command
