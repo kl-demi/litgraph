@@ -526,11 +526,26 @@ def _hero_backdrop(db: str) -> str:
     pairs = sorted({(s, d) for s, d, _ in edges if s in names and d in names and s != d})
 
     width, height = 1200, 430
+
+    # The hero copy and the search bar own the middle of the frame. An elliptical
+    # keep-out is enforced on every iteration -- not just at the end -- so mutual
+    # repulsion spreads the nodes along its rim instead of stacking them where a final
+    # projection happened to land. The graph reads as surrounding the text.
+    cx, cy, rx, ry = width / 2, 205.0, 455.0, 165.0
+
+    def _outside_keepout(x: float, y: float) -> tuple[float, float]:
+        dx, dy = (x - cx) / rx, (y - cy) / ry
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist >= 1.0:
+            return x, y
+        dist = max(dist, 0.12)
+        return cx + dx / dist * rx, cy + dy / dist * ry
+
     rng = random.Random(7)  # fixed seed: the backdrop should not reshuffle on rerun
-    pos = {n: [rng.uniform(90, width - 90), rng.uniform(70, height - 70)] for n in names}
-    k = math.sqrt(width * height / len(names)) * 0.62
-    temperature = 60.0
-    for _ in range(150):
+    pos = {n: [rng.uniform(70, width - 70), rng.uniform(45, height - 45)] for n in names}
+    k = math.sqrt(width * height / len(names)) * 0.8
+    temperature = 70.0
+    for _ in range(180):
         force = {n: [0.0, 0.0] for n in names}
         for i, a in enumerate(names):  # repulsion
             for b in names[i + 1 :]:
@@ -553,9 +568,10 @@ def _hero_backdrop(db: str) -> str:
             fx, fy = force[n]
             mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
             step = min(mag, temperature)
-            pos[n][0] = min(width - 90, max(90, pos[n][0] + fx / mag * step))
-            pos[n][1] = min(height - 60, max(60, pos[n][1] + fy / mag * step))
-        temperature *= 0.96
+            x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
+            y = min(height - 42, max(38, pos[n][1] + fy / mag * step))
+            pos[n][0], pos[n][1] = _outside_keepout(x, y)
+        temperature *= 0.97
 
     biggest = max(counts.get(n, 1) for n in names) or 1
     parts = [
@@ -572,11 +588,12 @@ def _hero_backdrop(db: str) -> str:
         color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
         radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
         x, y = pos[n]
+        label_y = min(y + radius + 15, height - 8)  # keep rim labels inside the frame
         parts.append(
             f'<g class="lg-drift" style="animation-delay:-{(i * 1.7) % 9:.1f}s">'
             f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
             f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
-            f'<text x="{x:.0f}" y="{y + radius + 15:.0f}" text-anchor="middle" fill="{color}" '
+            f'<text x="{x:.0f}" y="{label_y:.0f}" text-anchor="middle" fill="{color}" '
             f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
         )
     parts.append("</svg>")
@@ -1441,18 +1458,6 @@ def page_database() -> None:
     except httpx.HTTPError as exc:
         st.error(f"Could not load schema: {exc}")
         return
-
-    try:
-        nodes, edges, meta = _schema_graph(db)
-    except httpx.HTTPError as exc:
-        st.error(f"Could not build the schema graph: {exc}")
-        return
-    if nodes:
-        _graph_canvas(nodes, edges, key=f"schema-graph-{db}", height=380, meta=meta)
-        st.caption(
-            "Each node is a type, labelled with its record count; each edge is an edge type "
-            "that joins them. Endpoints are sampled from 200 edges per type."
-        )
 
     by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
     vertex = [t for t in by_count if t["type"] == "vertex"]
