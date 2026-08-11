@@ -49,3 +49,7 @@ chartCategoricalColors = ["#57534E", "#6F7F1F", "#B2643A", "#3F7370", "#7A5980",
 [theme.sidebar]
 backgroundColor = "#F4EFE5"
 borderColor = "#E4DBCE"
+
+[client]
+# Hide the Deploy button and dev menu: this is an app, not a notebook.
+toolbarMode = "minimal"

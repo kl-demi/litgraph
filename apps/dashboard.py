@@ -1,10 +1,11 @@
 """LitGraph dashboard: browse what's been ingested, run queries, see results as a graph.
 
-Pages: Overview (coverage figures + a graph of the schema itself), Search (papers,
-entities, and raw SQL/Cypher), Database (type cards + schema detail). Paper, Gene,
-Pathway and Trait views are reached from links and canvas clicks, navigate in-session
-(same tab, Back restores where you were), and mirror to ?paper=<id> and friends so
-they stay shareable.
+Navigation is a top bar (wordmark, page control, database picker); the sidebar is
+retired. Pages: Home (landing -- semantic search bar plus the database's figures),
+Search (papers, entities, raw SQL/Cypher), Database (schema map + per-type schema
+inspected in place). Paper, Gene, Pathway and Trait views are reached from links and
+canvas clicks, navigate in-session (same tab, Back restores where you were), and
+mirror to ?paper=<id> and friends so they stay shareable.
 
 Run with: streamlit run apps/dashboard.py
 """
@@ -40,7 +41,7 @@ from litgraph.search.traits import genes_for_trait, get_trait, papers_for_trait
 from litgraph.search.semantic import semantic_search
 from litgraph.search.stats import latest_papers, overview, top_authors, type_counts
 
-st.set_page_config(page_title="LitGraph", page_icon="📚", layout="wide")
+st.set_page_config(page_title="LitGraph", page_icon="📚", layout="wide", initial_sidebar_state="collapsed")
 
 # Streamlit's built-in form hint ("Press ⌘+Enter to submit form") isn't configurable;
 # reword it for the query editors only. Scoped to stTextArea so the search box's own
@@ -104,7 +105,10 @@ st.markdown(
         background-size: 120px 120px, 120px 120px, 24px 24px;
         background-position: -1px -1px, -1px -1px, 0 0;
     }
-    [data-testid="stSidebar"] { background-image: none; }
+    /* Navigation lives in a top bar; the sidebar is retired outright rather than left
+       as an empty gutter. */
+    [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] { display: none !important; }
 
     /* The jammed look was tight tracking plus a tall, delicate face. Bricolage is
        wide; these give it air and a settled baseline. */
@@ -495,30 +499,63 @@ def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
     st.altair_chart(chart, width="stretch")
 
 
-def page_overview() -> None:
+def _home_search_go() -> None:
+    """Landing-bar callback: carry the query into the Search page, semantic mode."""
+    query = (st.session_state.get("home_search") or "").strip()
+    if not query:
+        return
+    st.session_state["home_search"] = ""
+    st.session_state["search_text"] = query
+    st.session_state["search_box"] = query
+    st.session_state["search_mode"] = "Semantic"
+    st.session_state["_nav_last"] = "Search"
+    st.session_state["nav_page"] = "Search"
+    _reset_nav()
+
+
+def page_home() -> None:
     db = st.session_state["db"]
-    st.title("Overview")
-    st.caption(f"Database · {db}")
+    try:
+        pulse = _pulse(db)
+    except httpx.HTTPError:
+        pulse = []
+    papers = dict(pulse).get("Paper")
+    subtitle = (
+        f"A knowledge graph of {papers:,} papers connected to the genes, pathways, "
+        "traits and compounds they study."
+        if papers
+        else "A knowledge graph of papers connected to the biology they study."
+    )
 
-    data = _overview(db)
-    full, stubs = data["papers"], data["stubs"]
-    records = full + stubs
-
-    left, right = st.columns([2, 1])
-    with left:
-        st.markdown("**Paper coverage**")
-        _coverage("Full records", full, records, "Paper records")
-        _coverage("Enriched", data["enriched"], full, "full papers")
-        _coverage("Embedded", data["embedded"], full, "full papers")
-        st.caption(
-            "A stub is a placeholder created by a citation edge and holds a title at most, so it "
-            "can be neither enriched nor embedded. Both percentages are measured against full "
-            "papers rather than all records."
+    _, mid, _ = st.columns([1, 2.8, 1])
+    with mid:
+        st.markdown(
+            '<div style="text-align:center; padding-top:1.4rem">'
+            '<h1 style="font-size:3.2rem; margin-bottom:0.25rem">LitGraph'
+            '<span style="color:#B8D400">.</span></h1>'
+            f'<p style="font-size:1.12rem; opacity:0.75; margin-top:0">{subtitle}</p></div>',
+            unsafe_allow_html=True,
         )
-    with right:
-        st.metric("Paper records", f"{records:,}")
-        st.metric("Full papers", f"{full:,}")
-        st.metric("Authors", f"{data['authors']:,}")
+        st.text_input(
+            "Semantic search",
+            key="home_search",
+            on_change=_home_search_go,
+            placeholder="Describe what you are looking for — e.g. how rice tolerates drought",
+            label_visibility="collapsed",
+        )
+        chip_cols = st.columns(len(_SUGGESTIONS))
+        for col, term in zip(chip_cols, _SUGGESTIONS):
+            col.button(term, key=f"home-sugg-{term}", on_click=_use_suggestion, args=(term, True))
+        st.caption(
+            "Search finds papers by meaning, and genes, pathways, traits and compounds by "
+            "name or identifier."
+        )
+
+    st.divider()
+    if pulse:
+        cols = st.columns(len(pulse))
+        for col, (name, count) in zip(cols, pulse):
+            col.metric(f"{name}s", f"{count:,}")
 
     try:
         types = _schema_types(db)
@@ -535,72 +572,18 @@ def page_overview() -> None:
     with col2:
         _figure("Edges", edge_rows, "#B2643A")
 
-    st.subheader("Schema")
-    st.caption(
-        "Each node is a type, labelled with its record count; each edge is an edge type that "
-        "joins them. Endpoints are sampled from 200 edges per type."
-    )
-    try:
-        nodes, edges, meta = _schema_graph(db)
-    except httpx.HTTPError as exc:
-        st.error(f"Could not build the schema graph: {exc}")
-        return
-    if nodes:
-        _graph_canvas(nodes, edges, key=f"schema-graph-{db}", height=440, meta=meta)
-
-    st.divider()
-    st.button(
-        "Search the graph →",
-        type="primary",
-        key="goto-search",
-        on_click=lambda: st.session_state.__setitem__("nav_page", "Search"),
-    )
-
-
-def _coverage_tab() -> None:
-    data = _overview(st.session_state["db"])
-
-    # `papers` already excludes stubs, so the record total is the two added together.
+    data = _overview(db)
     full, stubs = data["papers"], data["stubs"]
     records = full + stubs
-
-    cols = st.columns(3)
-    cols[0].metric("Paper records", f"{records:,}")
-    cols[1].metric("Full papers", f"{full:,}")
-    cols[2].metric("Authors", f"{data['authors']:,}")
-    if data.get("earliest_published") and data.get("latest_published"):
-        st.caption(f"Published range: {data['earliest_published']} → {data['latest_published']}")
-
+    st.markdown("**Paper coverage**")
     _coverage("Full records", full, records, "Paper records")
     _coverage("Enriched", data["enriched"], full, "full papers")
     _coverage("Embedded", data["embedded"], full, "full papers")
     st.caption(
-        "A stub is a placeholder created by a citation edge — a title at most — so it can be "
-        "neither enriched nor embedded. Both are therefore measured against full papers, not "
-        "against every record: on a citation-heavy graph the two denominators differ by more "
-        "than tenfold."
+        "A stub is a placeholder created by a citation edge and holds a title at most, so it "
+        "can be neither enriched nor embedded. Both percentages are measured against full "
+        "papers rather than all records."
     )
-
-    if data.get("by_source"):
-        st.subheader("By source")
-        st.dataframe(data["by_source"], width="stretch")
-
-    st.subheader("Corpus tables")
-    # Behind a button: these are live scans over every Paper row and AUTHORED edge.
-    if st.button("Load tables (slow: full scans)"):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.caption("Latest papers")
-            st.dataframe(latest_papers(10), width="stretch", hide_index=True)
-            st.caption("Top authors")
-            st.dataframe(top_authors(10), width="stretch", hide_index=True)
-        with col2:
-            st.caption("Most cited")
-            cited = most_cited(limit=10)
-            if cited:
-                st.dataframe(cited, width="stretch", hide_index=True)
-            else:
-                st.info("This database has no citation edges.")
 
 
 # Both searches return a "score", but they mean opposite things, so each names its own.
@@ -666,10 +649,15 @@ def _concept_graph(db: str, papers: tuple[tuple[str, str], ...]) -> tuple[dict, 
     return nodes, edges, meta
 
 
-def _use_suggestion(term: str) -> None:
-    """Entry points for a blank page: the hardest search is the first one."""
+def _use_suggestion(term: str, go: bool = False) -> None:
+    """Entry points for a blank page: the hardest search is the first one. With go=True
+    (the landing page), also switch to the Search page."""
     st.session_state["search_text"] = term
     st.session_state["search_box"] = term
+    if go:
+        st.session_state["_nav_last"] = "Search"
+        st.session_state["nav_page"] = "Search"
+        _reset_nav()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -711,12 +699,6 @@ def _papers_search() -> None:
         cols[0].caption("Try")
         for col, term in zip(cols[1:], _SUGGESTIONS):
             col.button(term, key=f"sugg-{term}", on_click=_use_suggestion, args=(term,))
-        try:
-            pulse = _pulse(db)
-        except Exception:
-            pulse = []
-        if pulse:
-            st.caption(" · ".join(f"{count:,} {name.lower()}s" for name, count in pulse))
         return
 
     try:
@@ -750,7 +732,9 @@ def _papers_search() -> None:
 
     st.subheader("Papers")
     col_mode, col_view = st.columns(2)
-    mode = col_mode.radio("Mode", list(_SEARCH_MODES), horizontal=True, label_visibility="collapsed")
+    mode = col_mode.radio(
+        "Mode", list(_SEARCH_MODES), horizontal=True, label_visibility="collapsed", key="search_mode"
+    )
     view = col_view.radio("View", ["List", "Graph"], horizontal=True, label_visibility="collapsed")
     _, score_label, help_text = _SEARCH_MODES[mode]
     st.caption(help_text)
@@ -1321,116 +1305,189 @@ def page_trait(trait_id: str) -> None:
     _evidence_papers(papers, f"trp-{trait_id}", "trait")
 
 
-def _type_cards(rows: list[dict]) -> None:
-    per_row = 4
-    for start in range(0, len(rows), per_row):
-        cols = st.columns(per_row)
-        for col, row in zip(cols, rows[start : start + per_row]):
-            color = _KIND_COLOR.get(row["name"], _DEFAULT_KIND_COLOR)
-            with col.container(border=True):
-                st.markdown(
-                    f'<span style="color:{color}; font-weight:600">{row["name"]}</span>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(f"### {row.get('records', 0):,}")
-                st.caption(f"{len(row.get('properties', []))} properties · {len(row.get('indexes', []))} indexes")
+def _pick_type(group_key: str, other_key: str) -> None:
+    """Selecting in one pill group clears the other, so one type is inspected at a time."""
+    if st.session_state.get(group_key):
+        st.session_state[other_key] = None
 
 
-def page_graph() -> None:
-    """Reference detail on the types themselves: counts, properties and indexes.
-    Headline figures live on Overview; this page is where the schema is inspected."""
+def page_database() -> None:
+    """The schema, inspectable in place: a map of the types, then pills that open each
+    type's properties and indexes right below."""
     db = st.session_state["db"]
     st.title("Database")
-    st.caption(f"{db} · types, properties and indexes")
+    st.caption(f"{db} · select a type to see its schema")
     try:
         types = _schema_types(db)
     except httpx.HTTPError as exc:
         st.error(f"Could not load schema: {exc}")
         return
 
-    by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
-    nodes = [t for t in by_count if t["type"] == "vertex"]
-    edges = [t for t in by_count if t["type"] == "edge"]
-    documents = [t for t in by_count if t["type"] not in ("vertex", "edge")]
-
-    tab_types, tab_coverage, tab_schema = st.tabs(["Types", "Coverage", "Schema"])
-
-    with tab_coverage:
-        _coverage_tab()
-
-    with tab_types:
-        st.subheader(f"Nodes ({len(nodes)} types, {sum(t.get('records', 0) for t in nodes):,} records)")
-        _type_cards(nodes)
-        st.subheader(f"Edges ({len(edges)} types, {sum(t.get('records', 0) for t in edges):,} records)")
-        _type_cards(edges)
-        if documents:
-            st.subheader(f"Documents ({len(documents)} types)")
-            _type_cards(documents)
-
-    with tab_schema:
-        names = [t["name"] for t in sorted(types, key=lambda t: (t["type"], t["name"]))]
-        chosen = st.selectbox("Type", names, format_func=lambda n: n)
-        detail = next(t for t in types if t["name"] == chosen)
+    try:
+        nodes, edges, meta = _schema_graph(db)
+    except httpx.HTTPError as exc:
+        st.error(f"Could not build the schema graph: {exc}")
+        return
+    if nodes:
+        _graph_canvas(nodes, edges, key=f"schema-graph-{db}", height=380, meta=meta)
         st.caption(
-            f"{detail['type']} · {detail.get('records', 0):,} records"
-            + (f" · extends {', '.join(detail['parentTypes'])}" if detail.get("parentTypes") else "")
+            "Each node is a type, labelled with its record count; each edge is an edge type "
+            "that joins them. Endpoints are sampled from 200 edges per type."
         )
-        st.markdown("**Properties**")
-        props = detail.get("properties", [])
-        if props:
-            st.dataframe(
-                [{"name": p["name"], "type": p["type"], "default": p.get("default")} for p in props],
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.caption("No declared properties (schemaless records may still carry fields).")
-        st.markdown("**Indexes**")
-        indexes = detail.get("indexes", [])
-        if indexes:
-            st.dataframe(
-                [
-                    {
-                        "name": i["name"],
-                        "type": i["type"],
-                        "unique": i.get("unique"),
-                        "properties": ", ".join(i.get("properties", [])),
-                        "automatic": i.get("automatic"),
-                    }
-                    for i in indexes
-                ],
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.caption("No indexes.")
+
+    by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
+    vertex = [t for t in by_count if t["type"] == "vertex"]
+    edge = [t for t in by_count if t["type"] == "edge"]
+    vlabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in vertex}
+    elabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in edge}
+
+    # Keys are per-database: a stale selection whose label (the count) no longer exists
+    # in the options would otherwise be silently dropped.
+    vkey, ekey = f"dbtype-v-{db}", f"dbtype-e-{db}"
+    if vkey not in st.session_state and ekey not in st.session_state and vlabels:
+        st.session_state[vkey] = next(iter(vlabels))
+
+    st.caption(f"NODE TYPES ({len(vertex)})")
+    st.pills("Node types", list(vlabels), key=vkey, on_change=_pick_type,
+             args=(vkey, ekey), label_visibility="collapsed")
+    st.caption(f"EDGE TYPES ({len(edge)})")
+    st.pills("Edge types", list(elabels), key=ekey, on_change=_pick_type,
+             args=(ekey, vkey), label_visibility="collapsed")
+
+    chosen = vlabels.get(st.session_state.get(vkey) or "") or elabels.get(st.session_state.get(ekey) or "")
+    if chosen is None:
+        st.caption("Select a type above.")
+        return
+
+    with st.container(border=True):
+        color = _KIND_COLOR.get(chosen["name"], _DEFAULT_KIND_COLOR)
+        st.markdown(
+            f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
+            f'font-size:0.72rem; font-weight:600; letter-spacing:.07em; text-transform:uppercase; '
+            f'padding:2px 8px; border-radius:3px">{chosen["type"]}</span>'
+            f'&nbsp;&nbsp;<span style="font-family:\'Bricolage Grotesque\'; font-weight:600; '
+            f'font-size:1.35rem">{chosen["name"]}</span>',
+            unsafe_allow_html=True,
+        )
+        bits = [f"{chosen.get('records', 0):,} records"]
+        if chosen.get("parentTypes"):
+            bits.append(f"extends {', '.join(chosen['parentTypes'])}")
+        if chosen.get("buckets"):
+            bits.append(f"{len(chosen['buckets'])} buckets")
+        st.caption(" · ".join(bits))
+
+        col_props, col_idx = st.columns(2)
+        with col_props:
+            st.markdown("**Properties**")
+            props = chosen.get("properties", [])
+            if props:
+                st.dataframe(
+                    [{"name": q["name"], "type": q["type"], "default": q.get("default")} for q in props],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No declared properties (schemaless records may still carry fields).")
+        with col_idx:
+            st.markdown("**Indexes**")
+            indexes = chosen.get("indexes", [])
+            if indexes:
+                st.dataframe(
+                    [
+                        {
+                            "name": i["name"],
+                            "type": i["type"],
+                            "unique": i.get("unique"),
+                            "properties": ", ".join(i.get("properties", [])),
+                        }
+                        for i in indexes
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.caption("No indexes.")
+
+    with st.expander("Corpus tables (slow: full scans)"):
+        if st.button("Load", key="corpus-load"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("Latest papers")
+                st.dataframe(latest_papers(10), width="stretch", hide_index=True)
+                st.caption("Top authors")
+                st.dataframe(top_authors(10), width="stretch", hide_index=True)
+            with col2:
+                st.caption("Most cited")
+                cited = most_cited(limit=10)
+                if cited:
+                    st.dataframe(cited, width="stretch", hide_index=True)
+                else:
+                    st.info("This database has no citation edges.")
 
 
 _PAGES = {
-    "Overview": page_overview,
+    "Home": page_home,
     "Search": page_search,
-    "Database": page_graph,
+    "Database": page_database,
 }
 
 # The dashboard's own default, deliberately not ARCADEDB_DATABASE: cron reads that from
 # .env, so pointing the UI at a different graph must not go through it.
 _DEFAULT_DB = "rice"
 
-try:
-    _db_options = _databases()
-except httpx.HTTPError:
-    _db_options = [get_settings().arcadedb_database]
-_default = _DEFAULT_DB if _DEFAULT_DB in _db_options else get_settings().arcadedb_database
-_db = st.sidebar.selectbox(
-    "Database",
-    _db_options,
-    index=_db_options.index(_default) if _default in _db_options else 0,
-)
-st.session_state["db"] = _db
-set_database(_db)
 
-# Changing sidebar page while inside an entity view returns to the sidebar's pages.
-page = st.sidebar.radio("LitGraph", list(_PAGES), key="nav_page", on_change=_reset_nav)
+def _nav_changed() -> None:
+    """Keep the top nav deselect-proof. A segmented control returns None when its
+    selected item is clicked again; restore the page instead of falling off the nav.
+    Either way, any nav interaction leaves the current entity view."""
+    if st.session_state.get("nav_page") is None:
+        st.session_state["nav_page"] = st.session_state.get("_nav_last", "Home")
+    else:
+        st.session_state["_nav_last"] = st.session_state["nav_page"]
+    _reset_nav()
+
+
+def _top_nav() -> str:
+    """The app's single chrome: wordmark, page control, database picker. Replaces the
+    sidebar, which spent a full gutter on three options."""
+    try:
+        db_options = _databases()
+    except httpx.HTTPError:
+        db_options = [get_settings().arcadedb_database]
+
+    col_brand, col_pages, col_db = st.columns([1.6, 4.4, 1.2], vertical_alignment="center")
+    with col_brand:
+        st.markdown(
+            '<span style="font-family:\'Bricolage Grotesque\', sans-serif; font-weight:700; '
+            'font-size:1.5rem">LitGraph<span style="color:#B8D400">.</span></span>',
+            unsafe_allow_html=True,
+        )
+    with col_pages:
+        st.session_state.setdefault("nav_page", "Home")
+        st.segmented_control(
+            "Page",
+            list(_PAGES),
+            key="nav_page",
+            on_change=_nav_changed,
+            label_visibility="collapsed",
+        )
+    with col_db:
+        if "db_select" not in st.session_state:
+            st.session_state["db_select"] = (
+                _DEFAULT_DB if _DEFAULT_DB in db_options else db_options[0]
+            )
+        st.selectbox("Database", db_options, key="db_select", label_visibility="collapsed")
+
+    st.markdown(
+        '<hr style="margin:0.1rem 0 1.2rem; border:none; border-top:1px solid #E4DBCE">',
+        unsafe_allow_html=True,
+    )
+    return st.session_state.get("nav_page") or "Home"
+
+
+page = _top_nav()
+st.session_state["db"] = st.session_state["db_select"]
+set_database(st.session_state["db"])
 
 _ENTITY_VIEWS = {"paper": page_paper, "gene": page_gene, "pathway": page_pathway, "trait": page_trait}
 
