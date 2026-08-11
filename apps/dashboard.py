@@ -129,13 +129,22 @@ st.markdown(
     .stButton button[kind="tertiary"] { padding-left: 0; padding-right: 0; text-align: left; }
     /* Inside a card the tertiary button IS the title, so it carries heading weight and
        wraps like prose instead of being clipped to one line. */
-    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] {
-        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.6rem; font-weight: 400;
-        line-height: 1.25; white-space: normal; text-align: left; padding-top: 0.15rem;
+    /* Card titles. Keyed off st-key-cardtitle-*, the class Streamlit derives from a
+       widget key -- the container around a button exposes no testid to select on, so
+       an earlier selector here silently matched nothing and left titles at 14px.
+       !important because Streamlit sets the size on the inner <p> itself. */
+    [class*="st-key-cardtitle-"] button {
+        font-family: "Bricolage Grotesque", sans-serif !important;
+        font-size: 1.5rem !important; font-weight: 600 !important; line-height: 1.3 !important;
+        white-space: normal !important; text-align: left; padding: 0.1rem 0 !important;
     }
-    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] p,
-    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] strong {
-        white-space: normal; font-size: inherit; font-weight: inherit; line-height: inherit;
+    /* The inner <p> needs its own rule, and a long one: Streamlit sets the paragraph
+       size with !important at a specificity that beats anything shorter, so a plain
+       `... button p` (or `inherit`) loses and the title silently stays at 14px. */
+    [class*="st-key-cardtitle-"] div[data-testid="stButton"] button[kind="tertiary"]
+    div[data-testid="stMarkdownContainer"] p {
+        font-size: 1.5rem !important; font-weight: 600 !important;
+        line-height: 1.3 !important; white-space: normal !important;
     }
 
     /* The search field is the front door: give it presence over every other input.
@@ -189,8 +198,18 @@ def _reset_nav() -> None:
     st.session_state["nav_stack"] = []
 
 
-def _entity_button(label: str | None, kind: str, entity_id: str, key: str, bold: bool = False) -> None:
-    """A link-styled button that navigates in-session to a Paper or Gene view."""
+def _entity_button(
+    label: str | None, kind: str, entity_id: str, key: str, bold: bool = False, title: bool = False
+) -> None:
+    """A link-styled button that navigates in-session to an entity view.
+
+    `title` prefixes the key with "cardtitle-", which Streamlit turns into a
+    st-key-cardtitle-... class on the element container. That class is the only
+    reliable hook for styling these as headings: the surrounding container exposes no
+    testid to select on in this version.
+    """
+    if title:
+        key = f"cardtitle-{key}"
     text = _md_escape(label or entity_id)
     st.button(
         f"**{text}**" if bold else text,
@@ -225,7 +244,7 @@ def _record_card(
     with st.container(border=True):
         st.markdown(_kind_badge(kind, small=True), unsafe_allow_html=True)
         if view_kind:
-            _entity_button(title, view_kind, entity_id, key=key)
+            _entity_button(title, view_kind, entity_id, key=key, title=True)
         else:
             st.markdown(f"##### {_md_escape(title or entity_id)}")
         if meta:
@@ -671,7 +690,8 @@ def _hero_backdrop(db: str) -> str:
     ]
     for s_, d_ in pairs:
         parts.append(
-            f'<line x1="{pos[s_][0]:.0f}" y1="{pos[s_][1]:.0f}" '
+            f'<line data-src="{s_}" data-dst="{d_}" '
+            f'x1="{pos[s_][0]:.0f}" y1="{pos[s_][1]:.0f}" '
             f'x2="{pos[d_][0]:.0f}" y2="{pos[d_][1]:.0f}"/>'
         )
     parts.append("</g>")
@@ -684,7 +704,8 @@ def _hero_backdrop(db: str) -> str:
         below = y + radius + 15
         label_y = y - radius - 7 if 250 <= y <= 300 else min(below, height - 6)
         parts.append(
-            f'<g><circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
+            f'<g data-node="{n}">'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
             f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
             f'<text x="{x:.0f}" y="{label_y:.0f}" text-anchor="middle" fill="{color}" '
             f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
@@ -842,7 +863,7 @@ def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
 
 def _paper_hit(row: dict, score_label: str) -> None:
     with st.container(border=True):
-        _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}")
+        _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}", title=True)
         bits = []
         if row.get("pmid"):
             bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
@@ -1091,6 +1112,87 @@ def _browser_behaviours() -> None:
         };
         styleGraphs();
         new W.MutationObserver(styleGraphs).observe(doc.body, {childList: true, subtree: true});
+
+        // Backdrop position editor, on ?edit=1 only. Drag the nodes; the panel prints
+        // the _BACKDROP_ANCHORS dict for those positions, ready to paste into source.
+        const enableDrag = () => {
+            if (!new URLSearchParams(W.location.search).has("edit")) return;
+            const svg = doc.querySelector("#lg-hero svg");
+            if (!svg || svg.dataset.dragReady) return;
+            svg.dataset.dragReady = "1";
+
+            const css = doc.createElement("style");
+            css.textContent = "#lg-hero svg g[data-node] { pointer-events: all; cursor: grab; }";
+            doc.head.appendChild(css);
+
+            const vb = svg.viewBox.baseVal;
+            const groups = [...svg.querySelectorAll("g[data-node]")];
+            const state = new Map();
+            groups.forEach((g) => {
+                const c = g.querySelector("circle");
+                state.set(g.dataset.node, {g, x: +c.getAttribute("cx"), y: +c.getAttribute("cy"), dx: 0, dy: 0});
+            });
+            const centre = (n) => {
+                const s = state.get(n);
+                return s ? {x: s.x + s.dx, y: s.y + s.dy} : {x: 0, y: 0};
+            };
+
+            const panel = doc.createElement("pre");
+            panel.style.cssText =
+                "position:fixed; left:14px; bottom:14px; z-index:99999; background:#1C1917;" +
+                "color:#B8D400; font:11px/1.5 ui-monospace,monospace; padding:12px 14px;" +
+                "border-radius:6px; max-height:46vh; overflow:auto; user-select:all;";
+            doc.body.appendChild(panel);
+            const refresh = () => {
+                const rows = groups.map((g) => {
+                    const n = g.dataset.node, c = centre(n);
+                    return '    "' + n + '": (' + (c.x / vb.width).toFixed(3) + ", " +
+                           (c.y / vb.height).toFixed(3) + "),";
+                });
+                panel.textContent = "_BACKDROP_ANCHORS = {\\n" + rows.join("\\n") + "\\n}";
+                svg.querySelectorAll("line[data-src]").forEach((l) => {
+                    const a = centre(l.dataset.src), b = centre(l.dataset.dst);
+                    l.setAttribute("x1", a.x); l.setAttribute("y1", a.y);
+                    l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
+                });
+            };
+            refresh();
+
+            const toSvg = (e) => {
+                const p = svg.createSVGPoint();
+                p.x = e.clientX; p.y = e.clientY;
+                return p.matrixTransform(svg.getScreenCTM().inverse());
+            };
+            let active = null, origin = null;
+            groups.forEach((g) => {
+                g.addEventListener("pointerdown", (e) => {
+                    active = state.get(g.dataset.node);
+                    origin = toSvg(e);
+                    active.sdx = active.dx; active.sdy = active.dy;
+                    g.setPointerCapture(e.pointerId);
+                    g.style.cursor = "grabbing";
+                    e.preventDefault();
+                });
+                g.addEventListener("pointermove", (e) => {
+                    if (!active || active.g !== g) return;
+                    const p = toSvg(e);
+                    active.dx = active.sdx + (p.x - origin.x);
+                    active.dy = active.sdy + (p.y - origin.y);
+                    g.setAttribute("transform", "translate(" + active.dx + " " + active.dy + ")");
+                    refresh();
+                });
+                const stop = (e) => {
+                    if (!active) return;
+                    active = null;
+                    g.style.cursor = "grab";
+                    try { g.releasePointerCapture(e.pointerId); } catch (err) {}
+                };
+                g.addEventListener("pointerup", stop);
+                g.addEventListener("pointercancel", stop);
+            });
+        };
+        enableDrag();
+        new W.MutationObserver(enableDrag).observe(doc.body, {childList: true, subtree: true});
         </script>""",
         height=1,  # st.iframe rejects 0; everything it does happens in the parent page
     )
@@ -1781,5 +1883,10 @@ if _view:
     st.query_params.from_dict({_view[0]: _view[1]})
     _ENTITY_VIEWS[_view[0]](_view[1])
 else:
+    # `edit` survives the clear: it switches on the backdrop position editor, and the
+    # rewrite that drops stale entity params would otherwise strip it on every rerun.
+    _edit = st.query_params.get("edit")
     st.query_params.clear()
+    if _edit:
+        st.query_params["edit"] = _edit
     _PAGES[page]()
