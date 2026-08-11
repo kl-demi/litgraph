@@ -9,6 +9,7 @@ Run with: streamlit run apps/dashboard.py
 """
 
 import re
+import threading
 import time
 from urllib.parse import quote
 
@@ -20,6 +21,7 @@ import spokebio.schema_ext  # noqa: F401  -- registers bio types so type_counts 
 from litgraph.config import get_settings
 from litgraph.db.arcadedb_http import list_databases, run_query, run_raw
 from litgraph.db.context import set_database
+from litgraph.ingest.embeddings import embed_texts
 from litgraph.search.citations import get_citing_papers, get_references, most_cited
 from litgraph.search.entities import search_entities
 from litgraph.search.genes import (
@@ -35,6 +37,28 @@ from litgraph.search.semantic import semantic_search
 from litgraph.search.stats import latest_papers, overview, top_authors, type_counts
 
 st.set_page_config(page_title="LitGraph", page_icon="📚", layout="wide")
+
+
+@st.cache_resource(show_spinner=False)
+def _warm_embedding_service() -> bool:
+    """Wake the remote embedding pod at app start instead of on the first semantic
+    search: it sleeps when idle, and the request that wakes it measured ~75s against
+    ~1s warm. cache_resource runs this once per server process, not per session. A
+    failure is left for the first real search to report meaningfully."""
+    if not get_settings().embedding_service_url:
+        return False  # in-process model: nothing to wake, and don't load torch here
+
+    def _ping() -> None:
+        try:
+            embed_texts(["warm-up"])
+        except Exception:
+            pass
+
+    threading.Thread(target=_ping, daemon=True, name="embedding-warmup").start()
+    return True
+
+
+_warm_embedding_service()
 
 _NODE_STYLE = {
     "Paper": ("#dbeafe", "#1d4ed8"),
