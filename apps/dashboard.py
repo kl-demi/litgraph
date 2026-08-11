@@ -130,10 +130,11 @@ st.markdown(
     /* Inside a card the tertiary button IS the title, so it carries heading weight and
        wraps like prose instead of being clipped to one line. */
     [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] {
-        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.45rem; font-weight: 650;
+        font-family: "Bricolage Grotesque", sans-serif; font-size: 1.6rem; font-weight: 400;
         line-height: 1.25; white-space: normal; text-align: left; padding-top: 0.15rem;
     }
-    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] p {
+    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] p,
+    [data-testid="stVerticalBlockBorderWrapper"] .stButton button[kind="tertiary"] strong {
         white-space: normal; font-size: inherit; font-weight: inherit; line-height: inherit;
     }
 
@@ -224,7 +225,7 @@ def _record_card(
     with st.container(border=True):
         st.markdown(_kind_badge(kind, small=True), unsafe_allow_html=True)
         if view_kind:
-            _entity_button(title, view_kind, entity_id, key=key, bold=True)
+            _entity_button(title, view_kind, entity_id, key=key)
         else:
             st.markdown(f"##### {_md_escape(title or entity_id)}")
         if meta:
@@ -561,15 +562,16 @@ def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
 #   x < 0.24 and x > 0.82 are clear of the search bar; y < 0.44 is the copy; the band
 #   y 0.58-0.68 is the gap between the subtitle and the search bar; y > 0.78 with
 #   x > 0.72 is clear of the chips and the caption.
-# Paper sits in that gap rather than beside the subtitle: at subtitle height, every
-# edge leaving it rightward has to cross the copy, which is what put a line through
-# "compounds they study". Level with Compound, that edge runs flat underneath instead.
+# Paper and Compound both sit in the gap between the subtitle and the search bar, at
+# slightly different heights so the edge between them slants rather than running as a
+# flat rule. Keeping Paper at subtitle height was what put a line through "compounds
+# they study" -- any edge leaving it rightward had to cross the copy.
 _BACKDROP_ANCHORS = {
     "Author": (0.180, 0.172),
     "Category": (0.342, 0.163),
     "Organism": (0.106, 0.672),
-    "Paper": (0.208, 0.609),
-    "Compound": (0.875, 0.609),
+    "Paper": (0.360, 0.623),
+    "Compound": (0.875, 0.679),
     "Gene": (0.750, 0.814),
     "Trait": (0.933, 0.814),
     "Pathway": (0.833, 0.907),
@@ -677,7 +679,10 @@ def _hero_backdrop(db: str) -> str:
         color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
         radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
         x, y = pos[n]
-        label_y = min(y + radius + 15, height - 6)  # keep rim labels inside the frame
+        # Below the node normally, above it for the two sitting in the narrow gap over
+        # the search bar -- there the bar is opaque and would swallow the label.
+        below = y + radius + 15
+        label_y = y - radius - 7 if 250 <= y <= 300 else min(below, height - 6)
         parts.append(
             f'<g><circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
             f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
@@ -721,7 +726,7 @@ def page_home() -> None:
     # half. The SVG is pointer-events:none, so nothing behind them steals a click.
     backdrop = _hero_backdrop(db)
     st.markdown(
-        f'''<div id="lg-hero" style="position:relative; height:410px; margin-bottom:-170px">
+        f'''<div id="lg-hero" style="position:relative; height:410px; margin-bottom:-130px">
         {backdrop}
         <div style="position:relative; z-index:1; text-align:center; padding-top:2.6rem">
         <h1 style="font-size:3.2rem; margin-bottom:0.25rem">LitGraph<span style="color:#B8D400">.</span></h1>
@@ -837,7 +842,7 @@ def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
 
 def _paper_hit(row: dict, score_label: str) -> None:
     with st.container(border=True):
-        _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}", bold=True)
+        _entity_button(row.get("title") or "Untitled", "paper", row["id"], key=f"hit-{row['id']}")
         bits = []
         if row.get("pmid"):
             bits.append(f"[PMID {row['pmid']}](https://pubmed.ncbi.nlm.nih.gov/{row['pmid']}/)")
