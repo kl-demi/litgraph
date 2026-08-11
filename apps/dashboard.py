@@ -153,15 +153,20 @@ st.markdown(
     #lg-hero .lg-edges {
         position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
     }
+    /* The label is absolutely positioned so the node box is exactly the disc: the box
+       centre is what the edges are drawn to, and a label in normal flow would push
+       that centre down between the disc and the text. */
     #lg-hero .lg-node {
         position: absolute; transform: translate(-50%, -50%); pointer-events: none;
-        display: flex; flex-direction: column; align-items: center; gap: 4px;
+        line-height: 0;
     }
-    #lg-hero .lg-node.lg-above { flex-direction: column-reverse; }
-    #lg-hero .lg-dot { border-radius: 50%; opacity: 0.15; display: block; }
+    #lg-hero .lg-dot { border-radius: 50%; display: grid; place-items: center; }
+    #lg-hero .lg-core { width: 6px; height: 6px; border-radius: 50%; opacity: 0.55; }
     #lg-hero .lg-label {
+        position: absolute; left: 50%; transform: translateX(-50%); top: calc(100% + 5px);
         font-size: 12px; opacity: 0.55; white-space: nowrap; line-height: 1;
     }
+    #lg-hero .lg-node.lg-above .lg-label { top: auto; bottom: calc(100% + 5px); }
 
     /* The search field is the front door: give it presence over every other input.
        Scoped to the main area by data-testid rather than to the hero div -- Streamlit
@@ -672,11 +677,14 @@ def _hero_backdrop(db: str) -> str:
         color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
         size = 2 * (9 + math.sqrt(counts.get(n, 1) / biggest) * 24)
         above = _LABEL_ABOVE_BAND[0] <= fy <= _LABEL_ABOVE_BAND[1]
+        # 8-digit hex for the disc's alpha rather than `opacity`, which would form a
+        # group and fade the core dot inside it along with the disc.
         marks.append(
             f'<div class="lg-node{" lg-above" if above else ""}" data-node="{n}" '
             f'style="left:{fx * 100:.2f}%; top:{fy * 100:.2f}%">'
             f'<span class="lg-dot" style="width:{size:.0f}px; height:{size:.0f}px; '
-            f'background:{color}"></span>'
+            f'background:{color}26">'
+            f'<span class="lg-core" style="background:{color}"></span></span>'
             f'<span class="lg-label" style="color:{color}">{n}</span></div>'
         )
     return (
