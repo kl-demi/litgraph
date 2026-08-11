@@ -147,6 +147,22 @@ st.markdown(
         line-height: 1.3 !important; white-space: normal !important;
     }
 
+    /* Landing backdrop. Nodes are percentage-positioned HTML so they stay circular and
+       track the container the same way the copy and the search bar do; only the edges
+       are SVG, stretched to the box with a non-scaling stroke. */
+    #lg-hero .lg-edges {
+        position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+    }
+    #lg-hero .lg-node {
+        position: absolute; transform: translate(-50%, -50%); pointer-events: none;
+        display: flex; flex-direction: column; align-items: center; gap: 4px;
+    }
+    #lg-hero .lg-node.lg-above { flex-direction: column-reverse; }
+    #lg-hero .lg-dot { border-radius: 50%; opacity: 0.15; display: block; }
+    #lg-hero .lg-label {
+        font-size: 12px; opacity: 0.55; white-space: nowrap; line-height: 1;
+    }
+
     /* The search field is the front door: give it presence over every other input.
        Scoped to the main area by data-testid rather than to the hero div -- Streamlit
        wraps each element in its own container, so the hero and the input are not
@@ -588,29 +604,33 @@ def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
 _BACKDROP_ANCHORS = {
     "Author": (0.180, 0.172),
     "Category": (0.342, 0.163),
+    "Compound": (0.654, 0.531),
+    "Gene": (0.764, 0.861),
     "Organism": (0.106, 0.672),
-    "Paper": (0.360, 0.623),
-    "Compound": (0.875, 0.679),
-    "Gene": (0.750, 0.814),
-    "Trait": (0.933, 0.814),
-    "Pathway": (0.833, 0.907),
+    "Paper": (0.302, 0.575),
+    "Pathway": (0.865, 0.883),
+    "Trait": (0.916, 0.745),
 }
+
+# Labels sit above the node inside this band, where the search bar would otherwise
+# swallow them, and below it everywhere else.
+_LABEL_ABOVE_BAND = (0.56, 0.70)
 
 
 def _hero_backdrop(db: str) -> str:
-    """The actual schema, drawn as a decorative SVG behind the landing hero.
+    """The database's own schema, drawn behind the landing hero.
 
-    Not cached, deliberately. Its inputs (_schema_graph, _schema_types) are, and what
-    remains is arithmetic over at most a dozen nodes. Caching this instead keyed on the
-    database alone, so edits to _BACKDROP_ANCHORS -- a module global, invisible to the
-    cache's function hash -- appeared to do nothing until the TTL lapsed.
+    Positioned in percentages rather than SVG user units. A single SVG scales as one
+    rigid unit -- fitted by height it letterboxes on a wide monitor -- while the copy
+    and the search bar are laid out as fractions of the container, so the two drift
+    apart as the window widens. Nodes are therefore HTML circles at percentage offsets
+    (round at any aspect ratio) and only the edges are SVG, stretched with
+    preserveAspectRatio="none" and drawn with a non-scaling stroke so the lines meet
+    the circles at every width without the strokes shearing.
 
-    Deliberately not the interactive canvas: a backdrop must not fight the search bar
-    for pointer events, and the component's iframe cannot sit behind other widgets.
-    Nodes are the database's real types sized by record count; edges are its real edge
-    types. The drawing is static -- an earlier per-node drift animated each node group
-    while the edges sat in one unanimated group, so the lines visibly came adrift of
-    the circles they joined.
+    Not cached: its inputs are, and what is left is arithmetic over a dozen nodes,
+    whereas a cache keyed on the database alone hid edits to _BACKDROP_ANCHORS, which
+    is a module global and invisible to the cache's function hash.
     """
     try:
         nodes, edges, _ = _schema_graph(db)
@@ -622,8 +642,7 @@ def _hero_backdrop(db: str) -> str:
     counts = {t["name"]: t.get("records", 0) for t in _schema_types(db)}
     pairs = sorted({(s, d) for s, d, _ in edges if s in names and d in names and s != d})
 
-    width, height = 1200, 430
-    # ?anchors=Name:fx,fy;... overrides the baked-in map. The drag editor writes it, so
+    # ?anchors=Name:fx,fy;... overrides the baked-in map: the drag editor writes it, so
     # a dragged arrangement survives reruns and can be handed on as a plain URL.
     anchors = dict(_BACKDROP_ANCHORS)
     for item in (st.query_params.get("anchors") or "").split(";"):
@@ -633,91 +652,38 @@ def _hero_backdrop(db: str) -> str:
             anchors[name] = (float(fx), float(fy))
         except ValueError:
             continue
-    pos = {n: [anchors[n][0] * width, anchors[n][1] * height] for n in names if n in anchors}
-    free = [n for n in names if n not in pos]
 
-    if free:
-        # Only unanchored types move. They are repelled by every node, pulled along
-        # their edges, and kept off the wordmark and subtitle by an elliptical keep-out
-        # covering just those two pieces of transparent copy -- the search bar and chips
-        # below are opaque and hide whatever passes behind them.
-        cx, cy, rx, ry = width / 2, 118.0, 350.0, 108.0
+    placed = [n for n in names if n in anchors]
+    if not placed:
+        return ""
+    biggest = max(counts.get(n, 1) for n in placed) or 1
 
-        def _outside_text(x: float, y: float) -> tuple[float, float]:
-            dx, dy = (x - cx) / rx, (y - cy) / ry
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist >= 1.0:
-                return x, y
-            dist = max(dist, 0.15)
-            return cx + dx / dist * rx, cy + dy / dist * ry
-
-        rng = random.Random(7)  # fixed seed: the backdrop must not reshuffle on rerun
-        for n in free:
-            pos[n] = [rng.uniform(90, width - 90), rng.uniform(60, height - 60)]
-        k = math.sqrt(width * height / max(len(names), 1)) * 0.8
-        temperature = 70.0
-        for _ in range(180):
-            force = {n: [0.0, 0.0] for n in free}
-            for a in free:
-                for b in names:
-                    if a == b:
-                        continue
-                    dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
-                    d2 = max(dx * dx + dy * dy, 1.0)
-                    f = k * k / d2
-                    force[a][0] += dx * f
-                    force[a][1] += dy * f
-            for s_, d_ in pairs:
-                for near, far in ((s_, d_), (d_, s_)):
-                    if near in force:
-                        dx, dy = pos[near][0] - pos[far][0], pos[near][1] - pos[far][1]
-                        dist = max(math.sqrt(dx * dx + dy * dy), 1.0)
-                        f = dist / k
-                        force[near][0] -= dx * f
-                        force[near][1] -= dy * f
-            for n in free:
-                force[n][0] += (cx - pos[n][0]) * 0.55
-                force[n][1] += (cy + 60 - pos[n][1]) * 0.55
-                fx, fy = force[n]
-                mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
-                step = min(mag, temperature)
-                x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
-                y = min(330.0, max(38.0, pos[n][1] + fy / mag * step))
-                pos[n][0], pos[n][1] = _outside_text(x, y)
-            temperature *= 0.97
-
-    biggest = max(counts.get(n, 1) for n in names) or 1
-    parts = [
-        # `meet`, not `slice`: slice scales to cover and crops the overflow, which
-        # sheared the top off nodes sitting near the frame edge.
-        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" '
-        'style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none">',
-        '<g stroke="#1C1917" stroke-opacity="0.08" stroke-width="1.2">',
-    ]
-    for s_, d_ in pairs:
-        parts.append(
-            f'<line data-src="{s_}" data-dst="{d_}" '
-            f'x1="{pos[s_][0]:.0f}" y1="{pos[s_][1]:.0f}" '
-            f'x2="{pos[d_][0]:.0f}" y2="{pos[d_][1]:.0f}"/>'
-        )
-    parts.append("</g>")
-    for n in names:
+    lines = "".join(
+        f'<line data-src="{a}" data-dst="{b}" '
+        f'x1="{anchors[a][0] * 1000:.1f}" y1="{anchors[a][1] * 1000:.1f}" '
+        f'x2="{anchors[b][0] * 1000:.1f}" y2="{anchors[b][1] * 1000:.1f}" '
+        f'vector-effect="non-scaling-stroke"/>'
+        for a, b in pairs
+        if a in anchors and b in anchors
+    )
+    marks = []
+    for n in placed:
+        fx, fy = anchors[n]
         color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
-        radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
-        x, y = pos[n]
-        # Below the node normally, above it for the two sitting in the narrow gap over
-        # the search bar -- there the bar is opaque and would swallow the label.
-        below = y + radius + 15
-        label_y = y - radius - 7 if 250 <= y <= 300 else min(below, height - 6)
-        parts.append(
-            f'<g data-node="{n}">'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
-            f'<text x="{x:.0f}" y="{label_y:.0f}" text-anchor="middle" fill="{color}" '
-            f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
+        size = 2 * (9 + math.sqrt(counts.get(n, 1) / biggest) * 24)
+        above = _LABEL_ABOVE_BAND[0] <= fy <= _LABEL_ABOVE_BAND[1]
+        marks.append(
+            f'<div class="lg-node{" lg-above" if above else ""}" data-node="{n}" '
+            f'style="left:{fx * 100:.2f}%; top:{fy * 100:.2f}%">'
+            f'<span class="lg-dot" style="width:{size:.0f}px; height:{size:.0f}px; '
+            f'background:{color}"></span>'
+            f'<span class="lg-label" style="color:{color}">{n}</span></div>'
         )
-    parts.append("</svg>")
-    return "".join(parts)
+    return (
+        '<svg class="lg-edges" viewBox="0 0 1000 1000" preserveAspectRatio="none">'
+        f'<g stroke="#1C1917" stroke-opacity="0.09" stroke-width="1.2">{lines}</g></svg>'
+        + "".join(marks)
+    )
 
 
 def _home_search_go() -> None:
@@ -1120,28 +1086,26 @@ def _browser_behaviours() -> None:
         new W.MutationObserver(styleGraphs).observe(doc.body, {childList: true, subtree: true});
 
         // Backdrop position editor, on ?edit=1 only. Drag the nodes; the panel prints
-        // the _BACKDROP_ANCHORS dict for those positions, ready to paste into source.
+        // the _BACKDROP_ANCHORS dict, and positions mirror into ?anchors=... so the
+        // arrangement survives reruns and can be handed on as a plain URL.
         const enableDrag = () => {
             if (!new URLSearchParams(W.location.search).has("edit")) return;
-            const svg = doc.querySelector("#lg-hero svg");
-            if (!svg || svg.dataset.dragReady) return;
-            svg.dataset.dragReady = "1";
+            const hero = doc.querySelector("#lg-hero");
+            if (!hero || hero.dataset.dragReady) return;
+            const marks = [...hero.querySelectorAll(".lg-node")];
+            if (!marks.length) return;
+            hero.dataset.dragReady = "1";
 
             const css = doc.createElement("style");
-            css.textContent = "#lg-hero svg g[data-node] { pointer-events: all; cursor: grab; }";
+            css.textContent = "#lg-hero .lg-node { pointer-events: all !important; cursor: grab; }";
             doc.head.appendChild(css);
 
-            const vb = svg.viewBox.baseVal;
-            const groups = [...svg.querySelectorAll("g[data-node]")];
-            const state = new Map();
-            groups.forEach((g) => {
-                const c = g.querySelector("circle");
-                state.set(g.dataset.node, {g, x: +c.getAttribute("cx"), y: +c.getAttribute("cy"), dx: 0, dy: 0});
-            });
-            const centre = (n) => {
-                const s = state.get(n);
-                return s ? {x: s.x + s.dx, y: s.y + s.dy} : {x: 0, y: 0};
-            };
+            const frac = new Map();
+            marks.forEach((m) => frac.set(m.dataset.node, {
+                el: m,
+                fx: parseFloat(m.style.left) / 100,
+                fy: parseFloat(m.style.top) / 100,
+            }));
 
             const panel = doc.createElement("pre");
             panel.style.cssText =
@@ -1157,62 +1121,51 @@ def _browser_behaviours() -> None:
             doc.body.appendChild(panel);
 
             const refresh = () => {
-                const rows = groups.map((g) => {
-                    const n = g.dataset.node, c = centre(n);
-                    return '    "' + n + '": (' + (c.x / vb.width).toFixed(3) + ", " +
-                           (c.y / vb.height).toFixed(3) + "),";
+                const rows = [], packed = [];
+                [...frac.keys()].sort().forEach((n) => {
+                    const f = frac.get(n);
+                    rows.push('    "' + n + '": (' + f.fx.toFixed(3) + ", " + f.fy.toFixed(3) + "),");
+                    packed.push(n + ":" + f.fx.toFixed(3) + "," + f.fy.toFixed(3));
                 });
-                panel.dataset.dict = "_BACKDROP_ANCHORS = {\\n" + rows.join("\\n") + "\\n}";
-                panel.textContent = panel.dataset.dict + "\\n\\n(click to copy)";
-                svg.querySelectorAll("line[data-src]").forEach((l) => {
-                    const a = centre(l.dataset.src), b = centre(l.dataset.dst);
-                    l.setAttribute("x1", a.x); l.setAttribute("y1", a.y);
-                    l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
+                panel.dataset.dict = "_BACKDROP_ANCHORS = {\n" + rows.join("\n") + "\n}";
+                panel.textContent = panel.dataset.dict + "\n\n(click to copy)";
+                hero.querySelectorAll("line[data-src]").forEach((l) => {
+                    const a = frac.get(l.dataset.src), b = frac.get(l.dataset.dst);
+                    if (!a || !b) return;
+                    l.setAttribute("x1", a.fx * 1000); l.setAttribute("y1", a.fy * 1000);
+                    l.setAttribute("x2", b.fx * 1000); l.setAttribute("y2", b.fy * 1000);
                 });
-                // Mirror into the URL so the arrangement survives Streamlit's reruns,
-                // and so the address bar alone is enough to hand the layout on.
-                const packed = groups.map((g) => {
-                    const c = centre(g.dataset.node);
-                    return g.dataset.node + ":" + (c.x / vb.width).toFixed(3) +
-                           "," + (c.y / vb.height).toFixed(3);
-                }).join(";");
                 const url = new URL(W.location.href);
-                url.searchParams.set("anchors", packed);
+                url.searchParams.set("anchors", packed.join(";"));
                 W.history.replaceState(null, "", url);
             };
             refresh();
 
-            const toSvg = (e) => {
-                const p = svg.createSVGPoint();
-                p.x = e.clientX; p.y = e.clientY;
-                return p.matrixTransform(svg.getScreenCTM().inverse());
-            };
-            let active = null, origin = null;
-            groups.forEach((g) => {
-                g.addEventListener("pointerdown", (e) => {
-                    active = state.get(g.dataset.node);
-                    origin = toSvg(e);
-                    active.sdx = active.dx; active.sdy = active.dy;
-                    g.setPointerCapture(e.pointerId);
-                    g.style.cursor = "grabbing";
+            let active = null;
+            marks.forEach((m) => {
+                m.addEventListener("pointerdown", (e) => {
+                    active = frac.get(m.dataset.node);
+                    m.setPointerCapture(e.pointerId);
+                    m.style.cursor = "grabbing";
                     e.preventDefault();
                 });
-                g.addEventListener("pointermove", (e) => {
-                    if (!active || active.g !== g) return;
-                    const p = toSvg(e);
-                    active.dx = active.sdx + (p.x - origin.x);
-                    active.dy = active.sdy + (p.y - origin.y);
-                    g.setAttribute("transform", "translate(" + active.dx + " " + active.dy + ")");
+                m.addEventListener("pointermove", (e) => {
+                    if (!active || active.el !== m) return;
+                    const box = hero.getBoundingClientRect();
+                    active.fx = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
+                    active.fy = Math.min(1, Math.max(0, (e.clientY - box.top) / box.height));
+                    m.style.left = (active.fx * 100).toFixed(2) + "%";
+                    m.style.top = (active.fy * 100).toFixed(2) + "%";
                     refresh();
                 });
                 const stop = (e) => {
                     if (!active) return;
                     active = null;
-                    g.style.cursor = "grab";
-                    try { g.releasePointerCapture(e.pointerId); } catch (err) {}
+                    m.style.cursor = "grab";
+                    try { m.releasePointerCapture(e.pointerId); } catch (err) {}
                 };
-                g.addEventListener("pointerup", stop);
-                g.addEventListener("pointercancel", stop);
+                m.addEventListener("pointerup", stop);
+                m.addEventListener("pointercancel", stop);
             });
         };
         enableDrag();
