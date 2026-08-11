@@ -20,6 +20,10 @@ GENE = NodeType("Gene", key="gene_id", props=(Prop("name"),), bootstrappable=Tru
 
 COMPOUND = NodeType("Compound", key="compound_id", props=(Prop("name"),), bootstrappable=True)
 
+# MeSH-keyed, like Compound: PubTator3 normalizes diseases to MeSH descriptors, so a
+# doid_id field holding a MeSH id would misrepresent the data. See ingest/pubtator.py.
+DISEASE = NodeType("Disease", key="disease_id", props=(Prop("name"),), bootstrappable=True)
+
 # Bookkeeping node, kept as its own node rather than a Paper property so this never
 # has to write to a Paper vertex (see upsert.py's docstring on the ArcadeDB vector-index bug)
 EXTRACTION_CHECKED = NodeType(
@@ -38,6 +42,7 @@ register(
     ORGANISM,
     GENE,
     COMPOUND,
+    DISEASE,
     EXTRACTION_CHECKED,
     PATHWAY,
     MENTIONS,

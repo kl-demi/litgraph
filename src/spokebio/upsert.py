@@ -19,10 +19,20 @@ from litgraph.graph.writer import CreateMissing, upsert_edges, upsert_nodes
 from spokebio.models import EntityMention, ParticipatesIn, Pathway, Produces
 
 # The MENTIONS destination type per EntityMention.vertex_type. MENTIONS is registered
-# Paper -> Gene, and the other two are passed as a `dst` override.
-_MENTION_TARGETS = ("Organism", "Gene", "Compound")
-_KEY_PROP = {"Organism": "taxon_id", "Gene": "gene_id", "Compound": "compound_id"}
-_STAT_KEY = {"Organism": "new_organisms", "Gene": "new_genes", "Compound": "new_compounds"}
+# Paper -> Gene, and the others are passed as a `dst` override.
+_MENTION_TARGETS = ("Organism", "Gene", "Compound", "Disease")
+_KEY_PROP = {
+    "Organism": "taxon_id",
+    "Gene": "gene_id",
+    "Compound": "compound_id",
+    "Disease": "disease_id",
+}
+_STAT_KEY = {
+    "Organism": "new_organisms",
+    "Gene": "new_genes",
+    "Compound": "new_compounds",
+    "Disease": "new_diseases",
+}
 
 
 def upsert_pathways(pathways: list[Pathway]) -> int:
@@ -64,7 +74,7 @@ def upsert_produces(edges: list[Produces]) -> int:
 
 
 def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str) -> dict[str, int]:
-    """Upsert Gene/Compound/Organism nodes and MENTIONS edges for a batch of papers.
+    """Upsert Gene/Compound/Organism/Disease nodes and MENTIONS edges for a batch of papers.
 
     Neither endpoint is bootstrapped: an entity is written as a node in the pass above, and
     a paper that isn't in the graph isn't one this run should invent.
@@ -80,7 +90,14 @@ def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str)
     Returns:
         dict[str, int]: Counts of newly created nodes and edges, plus genes named.
     """
-    stats = {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0, "genes_named": 0}
+    stats = {
+        "new_organisms": 0,
+        "new_genes": 0,
+        "new_compounds": 0,
+        "new_diseases": 0,
+        "new_mention_edges": 0,
+        "genes_named": 0,
+    }
     if not paper_mentions:
         return stats
 

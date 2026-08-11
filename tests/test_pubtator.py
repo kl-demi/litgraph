@@ -27,17 +27,20 @@ _DISEASE = _annotation("Disease", "MESH:C000719201", "C000719201", "ncbi_mesh", 
 _UNNORMALIZED = _annotation("Chemical", None, None, "ncbi_mesh", None, "indole glucosinolate", valid=False)
 
 
-def test_extract_mentions_keeps_gene_chemical_species():
-    mentions = extract_mentions([_GENE, _CHEMICAL, _SPECIES])
+def test_extract_mentions_keeps_gene_chemical_species_disease():
+    mentions = extract_mentions([_GENE, _CHEMICAL, _SPECIES, _DISEASE])
 
     by_type = {m.vertex_type: m for m in mentions}
     assert by_type["Gene"] == EntityMention(vertex_type="Gene", entity_id="ncbigene:27161", name="AGO2")
     assert by_type["Compound"] == EntityMention(vertex_type="Compound", entity_id="mesh:D000241", name="Adenosine")
     assert by_type["Organism"] == EntityMention(vertex_type="Organism", entity_id="9606", name="human")
+    assert by_type["Disease"] == EntityMention(
+        vertex_type="Disease", entity_id="mesh:C000719201", name="Entomophobia"
+    )
 
 
-def test_extract_mentions_drops_disease_and_unnormalized():
-    mentions = extract_mentions([_DISEASE, _UNNORMALIZED])
+def test_extract_mentions_drops_unnormalized():
+    mentions = extract_mentions([_UNNORMALIZED])
     assert mentions == []
 
 
@@ -125,6 +128,7 @@ def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
             "pmid:111": [
                 EntityMention(vertex_type="Gene", entity_id="ncbigene:27161", name="AGO2"),
                 EntityMention(vertex_type="Organism", entity_id="9606", name="human"),
+                EntityMention(vertex_type="Disease", entity_id="mesh:D003920", name="Diabetes Mellitus"),
             ]
         },
         source="pubtator3",
@@ -134,12 +138,13 @@ def test_upsert_mentions_writes_entities_and_edges_per_type(mocker):
         "new_organisms": 1,
         "new_genes": 1,
         "new_compounds": 0,
-        "new_mention_edges": 2,
+        "new_diseases": 1,
+        "new_mention_edges": 3,
         "genes_named": 0,
     }
     # Compound has no mentions this batch, so it's skipped rather than issuing an empty call.
-    assert [call.args[0] for call in mock_nodes.call_args_list] == ["Organism", "Gene"]
-    assert [call.kwargs["dst"] for call in mock_edges.call_args_list] == ["Organism", "Gene"]
+    assert [call.args[0] for call in mock_nodes.call_args_list] == ["Organism", "Gene", "Disease"]
+    assert [call.kwargs["dst"] for call in mock_edges.call_args_list] == ["Organism", "Gene", "Disease"]
 
 
 def test_upsert_mentions_never_overwrites_an_entity_name(mocker):
@@ -217,6 +222,7 @@ def test_upsert_mentions_noop_on_empty(mocker):
         "new_organisms": 0,
         "new_genes": 0,
         "new_compounds": 0,
+        "new_diseases": 0,
         "new_mention_edges": 0,
         "genes_named": 0,
     }

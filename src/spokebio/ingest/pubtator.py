@@ -14,9 +14,10 @@ EXPORT_BATCH_SIZE = 100
 
 # Conversion between PubTator's annotations and ArcadeDB's node types
 _VERTEX_TYPE_BY_ANNOTATION_TYPE = {
-    "Gene": "Gene", 
-    "Chemical": "Compound", 
-    "Species": "Organism"
+    "Gene": "Gene",
+    "Chemical": "Compound",
+    "Species": "Organism",
+    "Disease": "Disease",
 }
 
 # Organism's key is the bare NCBI Taxonomy id (a single global namespace already, see
@@ -48,7 +49,7 @@ def _entity_name(annotation_type: str, infons: dict, text: str) -> str:
 
 def extract_mentions(annotations: list[dict]) -> list[EntityMention]:
     """Filter a PubTator3 document's raw annotations down to normalized Gene/Chemical/
-    Species mentions, deduped within the document. Drops anything unnormalized
+    Species/Disease mentions, deduped within the document. Drops anything unnormalized
     (``valid: false`` -- no stable ID to key a node on) and anything outside the
     listed annotation types.
     """

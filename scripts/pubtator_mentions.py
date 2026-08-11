@@ -1,8 +1,7 @@
 """Bootstrap script: for each ingested PubMed paper PubTator3 hasn't been queried for
-yet, fetch its Gene/Chemical/Species entity mentions and write them as MENTIONS edges.
-See docs/plant_schema.md for the full design context, filter-policy rationale (why
-Disease is dropped, why unnormalized entities are skipped), and the live API test this
-was built from.
+yet, fetch its Gene/Chemical/Species/Disease entity mentions and write them as MENTIONS
+edges. See docs/spoke_schema.md for the full design context and the filter-policy
+rationale (why unnormalized entities are skipped).
 
 Safe to run alongside another ingestion job (e.g. `litgraph enrich`) against the same
 ArcadeDB instance -- see spokebio/upsert.py's docstring for why. Start with a small
@@ -31,7 +30,8 @@ def main() -> None:
     print(
         f"Processed {totals['papers_processed']} papers: "
         f"+{totals['new_genes']} genes, +{totals['new_compounds']} compounds, "
-        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges, "
+        f"+{totals['new_organisms']} organisms, +{totals['new_diseases']} diseases, "
+        f"+{totals['new_mention_edges']} MENTIONS edges, "
         f"named {totals['genes_named']} previously key-only genes."
     )
 
