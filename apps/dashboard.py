@@ -135,7 +135,7 @@ st.markdown(
        !important because Streamlit sets the size on the inner <p> itself. */
     [class*="st-key-cardtitle-"] button {
         font-family: "Bricolage Grotesque", sans-serif !important;
-        font-size: 1.5rem !important; font-weight: 600 !important; line-height: 1.3 !important;
+        font-size: 1.3rem !important; font-weight: 600 !important; line-height: 1.3 !important;
         white-space: normal !important; text-align: left; padding: 0.1rem 0 !important;
     }
     /* The inner <p> needs its own rule, and a long one: Streamlit sets the paragraph
@@ -143,7 +143,7 @@ st.markdown(
        `... button p` (or `inherit`) loses and the title silently stays at 14px. */
     [class*="st-key-cardtitle-"] div[data-testid="stButton"] button[kind="tertiary"]
     div[data-testid="stMarkdownContainer"] p {
-        font-size: 1.5rem !important; font-weight: 600 !important;
+        font-size: 1.3rem !important; font-weight: 600 !important;
         line-height: 1.3 !important; white-space: normal !important;
     }
 
@@ -623,11 +623,17 @@ def _hero_backdrop(db: str) -> str:
     pairs = sorted({(s, d) for s, d, _ in edges if s in names and d in names and s != d})
 
     width, height = 1200, 430
-    pos = {
-        n: [_BACKDROP_ANCHORS[n][0] * width, _BACKDROP_ANCHORS[n][1] * height]
-        for n in names
-        if n in _BACKDROP_ANCHORS
-    }
+    # ?anchors=Name:fx,fy;... overrides the baked-in map. The drag editor writes it, so
+    # a dragged arrangement survives reruns and can be handed on as a plain URL.
+    anchors = dict(_BACKDROP_ANCHORS)
+    for item in (st.query_params.get("anchors") or "").split(";"):
+        name, _, coords = item.partition(":")
+        fx, _, fy = coords.partition(",")
+        try:
+            anchors[name] = (float(fx), float(fy))
+        except ValueError:
+            continue
+    pos = {n: [anchors[n][0] * width, anchors[n][1] * height] for n in names if n in anchors}
     free = [n for n in names if n not in pos]
 
     if free:
@@ -1141,20 +1147,38 @@ def _browser_behaviours() -> None:
             panel.style.cssText =
                 "position:fixed; left:14px; bottom:14px; z-index:99999; background:#1C1917;" +
                 "color:#B8D400; font:11px/1.5 ui-monospace,monospace; padding:12px 14px;" +
-                "border-radius:6px; max-height:46vh; overflow:auto; user-select:all;";
+                "border-radius:6px; max-height:46vh; overflow:auto; cursor:copy;";
+            panel.title = "Click to copy";
+            panel.addEventListener("click", () => {
+                W.navigator.clipboard.writeText(panel.dataset.dict || "");
+                panel.style.outline = "2px solid #B8D400";
+                setTimeout(() => { panel.style.outline = "none"; }, 400);
+            });
             doc.body.appendChild(panel);
+
             const refresh = () => {
                 const rows = groups.map((g) => {
                     const n = g.dataset.node, c = centre(n);
                     return '    "' + n + '": (' + (c.x / vb.width).toFixed(3) + ", " +
                            (c.y / vb.height).toFixed(3) + "),";
                 });
-                panel.textContent = "_BACKDROP_ANCHORS = {\\n" + rows.join("\\n") + "\\n}";
+                panel.dataset.dict = "_BACKDROP_ANCHORS = {\\n" + rows.join("\\n") + "\\n}";
+                panel.textContent = panel.dataset.dict + "\\n\\n(click to copy)";
                 svg.querySelectorAll("line[data-src]").forEach((l) => {
                     const a = centre(l.dataset.src), b = centre(l.dataset.dst);
                     l.setAttribute("x1", a.x); l.setAttribute("y1", a.y);
                     l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
                 });
+                // Mirror into the URL so the arrangement survives Streamlit's reruns,
+                // and so the address bar alone is enough to hand the layout on.
+                const packed = groups.map((g) => {
+                    const c = centre(g.dataset.node);
+                    return g.dataset.node + ":" + (c.x / vb.width).toFixed(3) +
+                           "," + (c.y / vb.height).toFixed(3);
+                }).join(";");
+                const url = new URL(W.location.href);
+                url.searchParams.set("anchors", packed);
+                W.history.replaceState(null, "", url);
             };
             refresh();
 
@@ -1885,8 +1909,8 @@ if _view:
 else:
     # `edit` survives the clear: it switches on the backdrop position editor, and the
     # rewrite that drops stale entity params would otherwise strip it on every rerun.
-    _edit = st.query_params.get("edit")
+    _keep = {k: st.query_params[k] for k in ("edit", "anchors") if st.query_params.get(k)}
     st.query_params.clear()
-    if _edit:
-        st.query_params["edit"] = _edit
+    for _k, _v in _keep.items():
+        st.query_params[_k] = _v
     _PAGES[page]()
