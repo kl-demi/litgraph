@@ -19,22 +19,23 @@ primaryColor = "#B8D400"
 linkColor = "#5E6B10"
 linkUnderline = false
 
-# A humanist sans for reading, a display serif for headings.
+# A humanist sans for reading, a wide display grotesque for headings. Instrument Serif
+# was the first choice and was replaced: its tight fit and delicate high-contrast
+# strokes read as cramped at heading sizes. Bricolage keeps the distinctiveness with
+# open apertures and real weight behind it.
 #
 # These are the bare "<family>:<url>" form on purpose. Appending a CSS fallback stack
 # (", Georgia, serif") does NOT produce fallbacks -- Streamlit folds the whole
 # remainder into the stylesheet href, requesting
-# ".../css2?family=Instrument+Serif&display=swap,%20Georgia,%20serif". Google happens
-# to tolerate that today, but it is a malformed request; the browser's own default
-# is the fallback if a fetch fails.
+# ".../css2?family=...&display=swap,%20Georgia,%20serif". Google happens to tolerate
+# that today, but it is a malformed request; the browser's own default is the fallback
+# if a fetch fails. A URL with a comma in it (a variable font's axis tuple) is
+# unusable here for the same reason.
 font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
-headingFont = "Instrument Serif:https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap"
+headingFont = "Bricolage Grotesque:https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400..800&display=swap"
 codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
 
-# Instrument Serif ships a single 400 weight; without this, Streamlit's default
-# 600/700 headings would be synthesised into faux-bold, which smears a
-# high-contrast display serif.
-headingFontWeights = [400, 400, 400, 500, 500, 500]
+headingFontWeights = [700, 600, 600, 600, 600, 600]
 
 # Precise rather than soft: small radii, visible field borders.
 baseRadius = "0.25rem"

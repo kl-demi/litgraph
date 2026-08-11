@@ -88,14 +88,42 @@ _KIND_COLOR = {
 }
 _DEFAULT_KIND_COLOR = "#8C8279"
 
-# Restrained, with exits faster than entrances: the base rule times the exit, the
-# :hover rule times the entrance.
 st.markdown(
     """<style>
+    /* A lattice, not wallpaper: a fine dot grid on a coarser rule, at an opacity that
+       reads as texture and never competes with text. The page is a plotting surface
+       for connected data, and the background says so quietly. */
+    [data-testid="stAppViewContainer"] {
+        background-image:
+            linear-gradient(rgba(28,25,23,0.028) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(28,25,23,0.028) 1px, transparent 1px),
+            radial-gradient(circle at 1px 1px, rgba(28,25,23,0.09) 1.1px, transparent 0);
+        background-size: 120px 120px, 120px 120px, 24px 24px;
+        background-position: -1px -1px, -1px -1px, 0 0;
+    }
+    [data-testid="stSidebar"] { background-image: none; }
+
+    /* The jammed look was tight tracking plus a tall, delicate face. Bricolage is
+       wide; these give it air and a settled baseline. */
+    h1, h2, h3, h4 { line-height: 1.14; letter-spacing: -0.005em; }
+    h1 { letter-spacing: -0.015em; margin-bottom: 0.1em; }
+
+    /* Restrained, with exits faster than entrances: the base rule times the exit,
+       the :hover rule times the entrance. */
     .stButton button, .stTabs button, [data-testid="stMetric"] { transition: all 90ms ease-out; }
     .stButton button:hover, .stTabs button:hover { transition: all 160ms ease-out; }
     /* Tertiary buttons are our in-app links: read as links, not as chrome. */
     .stButton button[kind="tertiary"] { padding-left: 0; padding-right: 0; text-align: left; }
+
+    /* The search field is the front door: give it presence over every other input.
+       Scoped to the main area by data-testid rather than to the hero div -- Streamlit
+       wraps each element in its own container, so the hero and the input are not
+       siblings and a `+` selector never matches. The query editors are textareas, so
+       this only ever hits the search box. */
+    section.main [data-testid="stTextInput"] input,
+    [data-testid="stMain"] [data-testid="stTextInput"] input {
+        font-size: 1.2rem; padding: 0.8rem 1rem;
+    }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -172,14 +200,15 @@ def node_meta(name: str | None, **fields: object) -> dict:
     return {"name": name, "fields": {k.replace("_", " "): v for k, v in fields.items() if v}}
 
 
-# Springy on arrival, then still. `animate: True` renders every simulation tick, which
-# looks lively but leaves the nodes drifting under the cursor and makes them genuinely
-# hard to click; "end" springs them into their final positions and stops.
+# Laid out and fitted synchronously on mount. The springy variants were tried and
+# reverted: `animate: True` renders every simulation tick, which looks lively but
+# leaves nodes drifting under the cursor and genuinely hard to click, and `"end"`
+# animates the settle while the container is still being sized, so the fit lands on a
+# stale viewport. Motion here costs legibility, which is the wrong trade for the one
+# view people came to read.
 _GRAPH_LAYOUT = {
     "name": "cose",
-    "animate": "end",
-    "animationDuration": 700,
-    "animationEasing": "spring(320, 24)",
+    "animate": False,
     "padding": 28,
     "fit": True,
     "nodeDimensionsIncludeLabels": True,
@@ -402,8 +431,7 @@ def _coverage(label: str, part: int, whole: int, unit: str) -> None:
     st.progress(share, text=f"**{label}** — {share:.1%}  ·  {part:,} of {whole:,} {unit}")
 
 
-def page_overview() -> None:
-    st.title("Overview")
+def _coverage_tab() -> None:
     data = _overview(st.session_state["db"])
 
     # `papers` already excludes stubs, so the record total is the two added together.
@@ -417,7 +445,6 @@ def page_overview() -> None:
     if data.get("earliest_published") and data.get("latest_published"):
         st.caption(f"Published range: {data['earliest_published']} → {data['latest_published']}")
 
-    st.subheader("Paper coverage")
     _coverage("Full records", full, records, "Paper records")
     _coverage("Enriched", data["enriched"], full, "full papers")
     _coverage("Embedded", data["embedded"], full, "full papers")
@@ -431,22 +458,6 @@ def page_overview() -> None:
     if data.get("by_source"):
         st.subheader("By source")
         st.dataframe(data["by_source"], width="stretch")
-
-    st.subheader("Node and edge counts")
-    counts = _type_counts(st.session_state["db"])
-    col1, col2 = st.columns(2)
-    with col1:
-        st.dataframe(
-            [{"node type": k, "count": v} for k, v in counts["nodes"].items()],
-            width="stretch",
-            hide_index=True,
-        )
-    with col2:
-        st.dataframe(
-            [{"edge type": k, "count": v} for k, v in counts["edges"].items()],
-            width="stretch",
-            hide_index=True,
-        )
 
     st.subheader("Corpus tables")
     # Behind a button: these are live scans over every Paper row and AUTHORED edge.
@@ -473,6 +484,10 @@ _SEARCH_MODES = {
 }
 
 _ENTITY_LABELS = ("Gene", "Pathway", "Trait", "Compound")
+
+# Deliberately spread across the entity types, so the first click teaches what the
+# graph holds. Tuned to the rice corpus; revisit when the bio reingest lands.
+_SUGGESTIONS = ("drought tolerance", "HD3A", "photoperiodism", "grain weight")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -523,22 +538,65 @@ def _concept_graph(db: str, papers: tuple[tuple[str, str], ...]) -> tuple[dict, 
     return nodes, edges, meta
 
 
+def _use_suggestion(term: str) -> None:
+    """Entry points for a blank page: the hardest search is the first one."""
+    st.session_state["search_text"] = term
+    st.session_state["search_box"] = term
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _pulse(db: str) -> list[tuple[str, int]]:
+    """Headline counts, as evidence there is something here worth searching.
+
+    Read off the live schema rather than type_counts(), which enumerates the declared
+    registry -- Trait lives only in the rice graph and isn't declared, so it would be
+    silently missing from the one corpus where it matters most.
+    """
+    counts = {t["name"]: t.get("records", 0) for t in _schema_types(db)}
+    wanted = ("Paper", "Gene", "Pathway", "Trait", "Compound")
+    return [(name, counts[name]) for name in wanted if counts.get(name)]
+
+
+def _hero() -> None:
+    st.markdown(
+        '<div id="lg-hero">'
+        '<h1 style="margin-bottom:0.15em">Find what connects.</h1>'
+        '<p style="font-size:1.05rem; opacity:0.72; margin-top:0">'
+        "Search a literature knowledge graph by topic, gene, pathway or trait — "
+        "then follow the edges.</p></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _papers_search() -> None:
+    _hero()
+    # Seeded rather than passed as `value=`: setting both a default and the session
+    # key is what Streamlit warns about, and the suggestion buttons write the key.
+    # `search_text` is the copy that survives the widget unmounting when you navigate
+    # to an entity page, and refills the box on the way back.
+    st.session_state.setdefault("search_box", st.session_state.get("search_text", ""))
     query = st.text_input(
         "Search",
-        value=st.session_state.get("search_text", ""),
         placeholder="a topic, a gene, a pathway…",
         label_visibility="collapsed",
         key="search_box",
     ).strip()
-    # Copied out of widget state: navigating to a paper unmounts the widget (dropping
-    # its state), and this copy is what refills it on the way back.
     st.session_state["search_text"] = query
-    if not query:
-        st.caption("Search papers by topic, or find a gene, pathway or trait by name.")
-        return
 
     db = st.session_state["db"]
+    if not query:
+        cols = st.columns(len(_SUGGESTIONS) + 1)
+        cols[0].caption("Try")
+        for col, term in zip(cols[1:], _SUGGESTIONS):
+            col.button(term, key=f"sugg-{term}", on_click=_use_suggestion, args=(term,))
+        try:
+            pulse = _pulse(db)
+        except Exception:
+            pulse = []
+        if pulse:
+            st.caption(" · ".join(f"{count:,} {name.lower()}s" for name, count in pulse))
+        return
+
     try:
         entities = _search_entities(db, query)
     except Exception as exc:
@@ -657,13 +715,14 @@ def _browser_behaviours() -> None:
         const viewKey = W.location.search;
         if (W.__lgFitKey !== viewKey) {
             W.__lgFitKey = viewKey;
-            let ticks = 0;
-            const settle = setInterval(() => {
+            // One nudge, once the layout has finished. Repeated nudges thrash the
+            // viewport: each is a re-fit, and firing them across the animation left
+            // the canvas blank as often as it left it framed.
+            setTimeout(() => {
                 doc.querySelectorAll('iframe[src*="st_link_analysis"]').forEach((f) => {
                     try { f.contentWindow.dispatchEvent(new Event("resize")); } catch (err) {}
                 });
-                if (++ticks >= 8) clearInterval(settle);
-            }, 500);
+            }, 1400);
         }
         </script>""",
         height=1,  # st.iframe rejects 0; everything it does happens in the parent page
@@ -764,10 +823,13 @@ def _query_editor(lang: str) -> None:
 
 
 def page_search() -> None:
-    st.title("Search")
-    tab_papers, tab_sql, tab_cypher = st.tabs(["Papers", "SQL", "Cypher"])
-    with tab_papers:
-        _papers_search()
+    """Search is the whole front door: the box is the first thing on the page, and the
+    raw-query editors sit below it rather than beside it as equal tabs. Making SQL a
+    peer of search implied you had to choose a language before you could look."""
+    _papers_search()
+    st.divider()
+    st.subheader("Query the graph directly")
+    tab_sql, tab_cypher = st.tabs(["SQL", "Cypher"])
     with tab_sql:
         _query_editor("sql")
     with tab_cypher:
@@ -1123,9 +1185,13 @@ def _type_cards(rows: list[dict]) -> None:
                 st.caption(f"{len(row.get('properties', []))} properties · {len(row.get('indexes', []))} indexes")
 
 
-def page_database() -> None:
+def page_graph() -> None:
+    """Everything *about* the graph, in one place. Coverage and schema were separate
+    pages that answered the same question -- what is in here -- and split the answer
+    across two sidebar entries for no reason a researcher would recognise."""
     db = st.session_state["db"]
-    st.title(f"Database · {db}")
+    st.title("The graph")
+    st.caption(f"Database · {db}")
     try:
         types = _schema_types(db)
     except httpx.HTTPError as exc:
@@ -1137,7 +1203,10 @@ def page_database() -> None:
     edges = [t for t in by_count if t["type"] == "edge"]
     documents = [t for t in by_count if t["type"] not in ("vertex", "edge")]
 
-    tab_types, tab_schema = st.tabs(["Types", "Schema"])
+    tab_types, tab_coverage, tab_schema = st.tabs(["Types", "Coverage", "Schema"])
+
+    with tab_coverage:
+        _coverage_tab()
 
     with tab_types:
         st.subheader(f"Nodes ({len(nodes)} types, {sum(t.get('records', 0) for t in nodes):,} records)")
@@ -1188,9 +1257,8 @@ def page_database() -> None:
 
 
 _PAGES = {
-    "Search": page_search,
-    "Overview": page_overview,
-    "Database": page_database,
+    "Explore": page_search,
+    "The graph": page_graph,
 }
 
 # The dashboard's own default, deliberately not ARCADEDB_DATABASE: cron reads that from
