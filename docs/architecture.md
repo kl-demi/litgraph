@@ -1,6 +1,6 @@
 # Architecture
 
-LitGraph is a literature knowledge graph: papers ingested from arXiv/Kaggle/PubMed, plus
+LitGraph is a literature knowledge graph, containing papers ingested from arXiv/Kaggle/PubMed, plus
 biology entities (genes, compounds, pathways) extracted from those papers or loaded from
 curated databases, such that a query can traverse from a Paper to the biology it
 is evidence for. Two Python packages share one database:
@@ -67,28 +67,16 @@ Two transports exist for ArcadeDB and the split is deliberate:
 
 ## 3. Schema registry
 
-`db/registry.py` is the single declaration of what a graph contains. A type is declared
-once as a `NodeType`/`EdgeType` and passed to `register()`; DDL for both backends is
-generated from the declaration, so adding a node type, property, or index is only a
-one-place edit inside schema files.
+`db/registry.py` defines generic nodes and edges. Specific types are declared on top of these generic shapes inside schema files, where they are passed to `register()` to run the DDL.
 
-A type is only registered once its schema file is imported — each file's `register(...)`
-call sits at module top level, so nothing exists in the registry until then:
-
-- `litgraph init-db` imports only `litgraph.db.schema`, so it registers just the core
-  paper types.
-- Biology types need a separate import of `spokebio.schema_ext`. The ingestion scripts,
-  `apps/dashboard.py`, and `tests/test_writer.py` each do this themselves.
-- `spokebio/pipeline.py` does not import it, so calling its `run_*_ingest` functions
-  directly, without going through one of those entry points, hits a database with no
-  bio schema.
+There are separate schema files for core paper types (`litgraph/db/schema.py`) and biology types (`spokebio.schema_ext.py`). 
 
 Conventions enforced by the registry:
 
 - **Node keys are external identifiers, never synthetic ids** — namespaced where two
   sources could collide (`arxiv:2101.00001`, `ncbigene:7157`, `mesh:D009422`), verbatim
   where the source's format is already self-identifying (`GO:0009611`, `R-HSA-164843`).
-- `Prop(indexed=True)` is what creates a (non-unique) index; only the key is unique.
+- `Prop(indexed=True)` creates a (non-unique) index; only the key is unique.
 - `NodeType.bootstrappable` declares whether an edge write may create the node key-only
   when absent (§5). True only for Gene, Compound, Organism.
 - `validate()` rejects an edge whose endpoint type isn't registered.
