@@ -553,15 +553,43 @@ def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
     st.altair_chart(chart, width="stretch")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+# Where each type sits in the landing backdrop, as fractions of the frame. Composed by
+# hand rather than left to the force layout: the hubs read best upper-left, the ontology
+# leaves tuck into the bottom-right, and Compound sits low enough that its edge to Paper
+# passes under the subtitle instead of through it. Any type not listed is placed by
+# relaxation around the ones that are, so an unfamiliar schema still lays out.
+#   x < 0.24 and x > 0.82 are clear of the search bar; y < 0.44 is the copy; the band
+#   y 0.58-0.68 is the gap between the subtitle and the search bar; y > 0.78 with
+#   x > 0.72 is clear of the chips and the caption.
+# Paper sits in that gap rather than beside the subtitle: at subtitle height, every
+# edge leaving it rightward has to cross the copy, which is what put a line through
+# "compounds they study". Level with Compound, that edge runs flat underneath instead.
+_BACKDROP_ANCHORS = {
+    "Author": (0.180, 0.172),
+    "Category": (0.342, 0.163),
+    "Organism": (0.106, 0.672),
+    "Paper": (0.208, 0.609),
+    "Compound": (0.875, 0.609),
+    "Gene": (0.750, 0.814),
+    "Trait": (0.933, 0.814),
+    "Pathway": (0.833, 0.907),
+}
+
+
 def _hero_backdrop(db: str) -> str:
     """The actual schema, drawn as a decorative SVG behind the landing hero.
 
+    Not cached, deliberately. Its inputs (_schema_graph, _schema_types) are, and what
+    remains is arithmetic over at most a dozen nodes. Caching this instead keyed on the
+    database alone, so edits to _BACKDROP_ANCHORS -- a module global, invisible to the
+    cache's function hash -- appeared to do nothing until the TTL lapsed.
+
     Deliberately not the interactive canvas: a backdrop must not fight the search bar
     for pointer events, and the component's iframe cannot sit behind other widgets.
-    Nodes are the database's real types sized by record count, edges its real edge
-    types, laid out with a few rounds of force-directed relaxation. Motion is a slow
-    per-node drift, disabled under prefers-reduced-motion.
+    Nodes are the database's real types sized by record count; edges are its real edge
+    types. The drawing is static -- an earlier per-node drift animated each node group
+    while the edges sat in one unanimated group, so the lines visibly came adrift of
+    the circles they joined.
     """
     try:
         nodes, edges, _ = _schema_graph(db)
@@ -574,63 +602,62 @@ def _hero_backdrop(db: str) -> str:
     pairs = sorted({(s, d) for s, d, _ in edges if s in names and d in names and s != d})
 
     width, height = 1200, 430
+    pos = {
+        n: [_BACKDROP_ANCHORS[n][0] * width, _BACKDROP_ANCHORS[n][1] * height]
+        for n in names
+        if n in _BACKDROP_ANCHORS
+    }
+    free = [n for n in names if n not in pos]
 
-    # Two forces shape this, and both are needed. The keep-out is an ellipse over the
-    # wordmark and subtitle only -- the two pieces of transparent copy; the search bar
-    # and chips below are opaque and hide whatever sits behind them. Gravity pulls
-    # every node toward that same centre, so they settle in a ring hugging the text.
-    #
-    # A wide vertical band was tried and reverted: pushing nodes past a hard x offset
-    # cleared the text but flung them to the frame edges, leaving a dead middle and
-    # reading as two unrelated groups rather than one cluster.
-    cx, cy = width / 2, 118.0
-    rx, ry = 350.0, 108.0
+    if free:
+        # Only unanchored types move. They are repelled by every node, pulled along
+        # their edges, and kept off the wordmark and subtitle by an elliptical keep-out
+        # covering just those two pieces of transparent copy -- the search bar and chips
+        # below are opaque and hide whatever passes behind them.
+        cx, cy, rx, ry = width / 2, 118.0, 350.0, 108.0
 
-    def _outside_text(x: float, y: float) -> tuple[float, float]:
-        dx, dy = (x - cx) / rx, (y - cy) / ry
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist >= 1.0:
-            return x, y
-        dist = max(dist, 0.15)
-        return cx + dx / dist * rx, cy + dy / dist * ry
+        def _outside_text(x: float, y: float) -> tuple[float, float]:
+            dx, dy = (x - cx) / rx, (y - cy) / ry
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist >= 1.0:
+                return x, y
+            dist = max(dist, 0.15)
+            return cx + dx / dist * rx, cy + dy / dist * ry
 
-    rng = random.Random(7)  # fixed seed: the backdrop should not reshuffle on rerun
-    pos = {n: [rng.uniform(70, width - 70), rng.uniform(45, height - 45)] for n in names}
-    k = math.sqrt(width * height / len(names)) * 0.8
-    temperature = 70.0
-    for _ in range(180):
-        force = {n: [0.0, 0.0] for n in names}
-        for i, a in enumerate(names):  # repulsion
-            for b in names[i + 1 :]:
-                dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
-                d2 = max(dx * dx + dy * dy, 1.0)
-                f = k * k / d2
-                force[a][0] += dx * f
-                force[a][1] += dy * f
-                force[b][0] -= dx * f
-                force[b][1] -= dy * f
-        for s, d in pairs:  # attraction along edges
-            dx, dy = pos[s][0] - pos[d][0], pos[s][1] - pos[d][1]
-            dist = max(math.sqrt(dx * dx + dy * dy), 1.0)
-            f = dist / k
-            force[s][0] -= dx * f
-            force[s][1] -= dy * f
-            force[d][0] += dx * f
-            force[d][1] += dy * f
-        for n in names:  # gravity, so the cluster stays around the middle of the frame
-            force[n][0] += (cx - pos[n][0]) * 0.55
-            force[n][1] += (cy + 60 - pos[n][1]) * 0.55
-        for n in names:
-            fx, fy = force[n]
-            mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
-            step = min(mag, temperature)
-            x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
-            # Stop short of the frame's bottom: the last ~100 units sit under the
-            # caption below the chips, and a node label landing on that line is the
-            # one collision the opaque widgets don't hide.
-            y = min(330.0, max(38.0, pos[n][1] + fy / mag * step))
-            pos[n][0], pos[n][1] = _outside_text(x, y)
-        temperature *= 0.97
+        rng = random.Random(7)  # fixed seed: the backdrop must not reshuffle on rerun
+        for n in free:
+            pos[n] = [rng.uniform(90, width - 90), rng.uniform(60, height - 60)]
+        k = math.sqrt(width * height / max(len(names), 1)) * 0.8
+        temperature = 70.0
+        for _ in range(180):
+            force = {n: [0.0, 0.0] for n in free}
+            for a in free:
+                for b in names:
+                    if a == b:
+                        continue
+                    dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
+                    d2 = max(dx * dx + dy * dy, 1.0)
+                    f = k * k / d2
+                    force[a][0] += dx * f
+                    force[a][1] += dy * f
+            for s_, d_ in pairs:
+                for near, far in ((s_, d_), (d_, s_)):
+                    if near in force:
+                        dx, dy = pos[near][0] - pos[far][0], pos[near][1] - pos[far][1]
+                        dist = max(math.sqrt(dx * dx + dy * dy), 1.0)
+                        f = dist / k
+                        force[near][0] -= dx * f
+                        force[near][1] -= dy * f
+            for n in free:
+                force[n][0] += (cx - pos[n][0]) * 0.55
+                force[n][1] += (cy + 60 - pos[n][1]) * 0.55
+                fx, fy = force[n]
+                mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
+                step = min(mag, temperature)
+                x = min(width - 70, max(70, pos[n][0] + fx / mag * step))
+                y = min(330.0, max(38.0, pos[n][1] + fy / mag * step))
+                pos[n][0], pos[n][1] = _outside_text(x, y)
+            temperature *= 0.97
 
     biggest = max(counts.get(n, 1) for n in names) or 1
     parts = [
@@ -640,23 +667,22 @@ def _hero_backdrop(db: str) -> str:
         'style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none">',
         '<g stroke="#1C1917" stroke-opacity="0.08" stroke-width="1.2">',
     ]
-    for s, d in pairs:
+    for s_, d_ in pairs:
         parts.append(
-            f'<line x1="{pos[s][0]:.0f}" y1="{pos[s][1]:.0f}" x2="{pos[d][0]:.0f}" y2="{pos[d][1]:.0f}"/>'
+            f'<line x1="{pos[s_][0]:.0f}" y1="{pos[s_][1]:.0f}" '
+            f'x2="{pos[d_][0]:.0f}" y2="{pos[d_][1]:.0f}"/>'
         )
     parts.append("</g>")
-    for i, n in enumerate(names):
+    for n in names:
         color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
         radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
         x, y = pos[n]
-        label_y = min(y + radius + 15, height - 8)  # keep rim labels inside the frame
-        disc, core, text = 0.15, 0.5, 0.55
+        label_y = min(y + radius + 15, height - 6)  # keep rim labels inside the frame
         parts.append(
-            f'<g class="lg-drift" style="animation-delay:-{(i * 1.7) % 9:.1f}s">'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="{disc}"/>'
-            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="{core}"/>'
+            f'<g><circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
             f'<text x="{x:.0f}" y="{label_y:.0f}" text-anchor="middle" fill="{color}" '
-            f'fill-opacity="{text}" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
+            f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
         )
     parts.append("</svg>")
     return "".join(parts)
@@ -700,12 +726,7 @@ def page_home() -> None:
         <div style="position:relative; z-index:1; text-align:center; padding-top:2.6rem">
         <h1 style="font-size:3.2rem; margin-bottom:0.25rem">LitGraph<span style="color:#B8D400">.</span></h1>
         <p style="font-size:1.12rem; opacity:0.78; margin-top:0; max-width:44rem; display:inline-block">{subtitle}</p>
-        </div></div>
-        <style>
-        @keyframes lg-drift {{ from {{ transform: translateY(-7px); }} to {{ transform: translateY(7px); }} }}
-        #lg-hero svg g.lg-drift {{ animation: lg-drift 9s ease-in-out infinite alternate; }}
-        @media (prefers-reduced-motion: reduce) {{ #lg-hero svg g.lg-drift {{ animation: none; }} }}
-        </style>''',
+        </div></div>''',
         unsafe_allow_html=True,
     )
     _, mid, _ = st.columns([1, 2.8, 1])
