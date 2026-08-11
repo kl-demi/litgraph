@@ -10,6 +10,8 @@ mirror to ?paper=<id> and friends so they stay shareable.
 Run with: streamlit run apps/dashboard.py
 """
 
+import math
+import random
 import re
 import threading
 import time
@@ -91,6 +93,10 @@ _KIND_COLOR = {
     "Category": "#8C8279",
 }
 _DEFAULT_KIND_COLOR = "#8C8279"
+
+# Ingestion bookkeeping, not biology: kept out of the landing figures and backdrop.
+# The Database page still lists them, since there they are schema fact.
+_BOOKKEEPING_TYPES = {"GraphStats", "IngestState", "PubtatorChecked", "ExtractionChecked"}
 
 st.markdown(
     """<style>
@@ -499,6 +505,84 @@ def _figure(title: str, rows: list[tuple[str, int]], color: str) -> None:
     st.altair_chart(chart, width="stretch")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _hero_backdrop(db: str) -> str:
+    """The actual schema, drawn as a decorative SVG behind the landing hero.
+
+    Deliberately not the interactive canvas: a backdrop must not fight the search bar
+    for pointer events, and the component's iframe cannot sit behind other widgets.
+    Nodes are the database's real types sized by record count, edges its real edge
+    types, laid out with a few rounds of force-directed relaxation. Motion is a slow
+    per-node drift, disabled under prefers-reduced-motion.
+    """
+    try:
+        nodes, edges, _ = _schema_graph(db)
+    except httpx.HTTPError:
+        return ""
+    names = [n for n in nodes if n not in _BOOKKEEPING_TYPES]
+    if len(names) < 3:
+        return ""
+    counts = {t["name"]: t.get("records", 0) for t in _schema_types(db)}
+    pairs = sorted({(s, d) for s, d, _ in edges if s in names and d in names and s != d})
+
+    width, height = 1200, 430
+    rng = random.Random(7)  # fixed seed: the backdrop should not reshuffle on rerun
+    pos = {n: [rng.uniform(90, width - 90), rng.uniform(70, height - 70)] for n in names}
+    k = math.sqrt(width * height / len(names)) * 0.62
+    temperature = 60.0
+    for _ in range(150):
+        force = {n: [0.0, 0.0] for n in names}
+        for i, a in enumerate(names):  # repulsion
+            for b in names[i + 1 :]:
+                dx, dy = pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]
+                d2 = max(dx * dx + dy * dy, 1.0)
+                f = k * k / d2
+                force[a][0] += dx * f
+                force[a][1] += dy * f
+                force[b][0] -= dx * f
+                force[b][1] -= dy * f
+        for s, d in pairs:  # attraction along edges
+            dx, dy = pos[s][0] - pos[d][0], pos[s][1] - pos[d][1]
+            dist = max(math.sqrt(dx * dx + dy * dy), 1.0)
+            f = dist / k
+            force[s][0] -= dx * f
+            force[s][1] -= dy * f
+            force[d][0] += dx * f
+            force[d][1] += dy * f
+        for n in names:
+            fx, fy = force[n]
+            mag = max(math.sqrt(fx * fx + fy * fy), 0.01)
+            step = min(mag, temperature)
+            pos[n][0] = min(width - 90, max(90, pos[n][0] + fx / mag * step))
+            pos[n][1] = min(height - 60, max(60, pos[n][1] + fy / mag * step))
+        temperature *= 0.96
+
+    biggest = max(counts.get(n, 1) for n in names) or 1
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid slice" '
+        'style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none">',
+        '<g stroke="#1C1917" stroke-opacity="0.08" stroke-width="1.2">',
+    ]
+    for s, d in pairs:
+        parts.append(
+            f'<line x1="{pos[s][0]:.0f}" y1="{pos[s][1]:.0f}" x2="{pos[d][0]:.0f}" y2="{pos[d][1]:.0f}"/>'
+        )
+    parts.append("</g>")
+    for i, n in enumerate(names):
+        color = _KIND_COLOR.get(n, _DEFAULT_KIND_COLOR)
+        radius = 9 + math.sqrt(counts.get(n, 1) / biggest) * 24
+        x, y = pos[n]
+        parts.append(
+            f'<g class="lg-drift" style="animation-delay:-{(i * 1.7) % 9:.1f}s">'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{radius:.0f}" fill="{color}" fill-opacity="0.15"/>'
+            f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3" fill="{color}" fill-opacity="0.5"/>'
+            f'<text x="{x:.0f}" y="{y + radius + 15:.0f}" text-anchor="middle" fill="{color}" '
+            f'fill-opacity="0.55" font-size="12" font-family="IBM Plex Sans, sans-serif">{n}</text></g>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _home_search_go() -> None:
     """Landing-bar callback: carry the query into the Search page, semantic mode."""
     query = (st.session_state.get("home_search") or "").strip()
@@ -527,15 +611,26 @@ def page_home() -> None:
         else "A knowledge graph of papers connected to the biology they study."
     )
 
+    # The hero div is taller than its flow height: the negative bottom margin lets the
+    # widgets that follow (the search bar, the chips) render over the backdrop's lower
+    # half. The SVG is pointer-events:none, so nothing behind them steals a click.
+    backdrop = _hero_backdrop(db)
+    st.markdown(
+        f'''<div id="lg-hero" style="position:relative; height:410px; margin-bottom:-170px">
+        {backdrop}
+        <div style="position:relative; z-index:1; text-align:center; padding-top:2.6rem">
+        <h1 style="font-size:3.2rem; margin-bottom:0.25rem">LitGraph<span style="color:#B8D400">.</span></h1>
+        <p style="font-size:1.12rem; opacity:0.78; margin-top:0; max-width:44rem; display:inline-block">{subtitle}</p>
+        </div></div>
+        <style>
+        @keyframes lg-drift {{ from {{ transform: translateY(-7px); }} to {{ transform: translateY(7px); }} }}
+        #lg-hero svg g.lg-drift {{ animation: lg-drift 9s ease-in-out infinite alternate; }}
+        @media (prefers-reduced-motion: reduce) {{ #lg-hero svg g.lg-drift {{ animation: none; }} }}
+        </style>''',
+        unsafe_allow_html=True,
+    )
     _, mid, _ = st.columns([1, 2.8, 1])
     with mid:
-        st.markdown(
-            '<div style="text-align:center; padding-top:1.4rem">'
-            '<h1 style="font-size:3.2rem; margin-bottom:0.25rem">LitGraph'
-            '<span style="color:#B8D400">.</span></h1>'
-            f'<p style="font-size:1.12rem; opacity:0.75; margin-top:0">{subtitle}</p></div>',
-            unsafe_allow_html=True,
-        )
         st.text_input(
             "Semantic search",
             key="home_search",
@@ -543,9 +638,14 @@ def page_home() -> None:
             placeholder="Describe what you are looking for — e.g. how rice tolerates drought",
             label_visibility="collapsed",
         )
-        chip_cols = st.columns(len(_SUGGESTIONS))
-        for col, term in zip(chip_cols, _SUGGESTIONS):
-            col.button(term, key=f"home-sugg-{term}", on_click=_use_suggestion, args=(term, True))
+        st.pills(
+            "Suggestions",
+            _SUGGESTIONS,
+            key="home_sugg",
+            on_change=_suggestion_picked,
+            args=("home_sugg", True),
+            label_visibility="collapsed",
+        )
         st.caption(
             "Search finds papers by meaning, and genes, pathways, traits and compounds by "
             "name or identifier."
@@ -563,7 +663,11 @@ def page_home() -> None:
         st.error(f"Could not load schema: {exc}")
         return
     by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
-    node_rows = [(t["name"], t["records"]) for t in by_count if t["type"] == "vertex" and t.get("records")]
+    node_rows = [
+        (t["name"], t["records"])
+        for t in by_count
+        if t["type"] == "vertex" and t.get("records") and t["name"] not in _BOOKKEEPING_TYPES
+    ]
     edge_rows = [(t["name"], t["records"]) for t in by_count if t["type"] == "edge" and t.get("records")]
 
     col1, col2 = st.columns(2)
@@ -571,6 +675,7 @@ def page_home() -> None:
         _figure("Nodes", node_rows, "#6F7F1F")
     with col2:
         _figure("Edges", edge_rows, "#B2643A")
+    st.caption("Ingestion bookkeeping types are not shown; the Database page lists every type.")
 
     data = _overview(db)
     full, stubs = data["papers"], data["stubs"]
@@ -660,6 +765,15 @@ def _use_suggestion(term: str, go: bool = False) -> None:
         _reset_nav()
 
 
+def _suggestion_picked(key: str, go: bool) -> None:
+    """Pill-group callback: run the picked suggestion, then clear the pills so they
+    read as actions rather than a lingering selection."""
+    term = st.session_state.get(key)
+    if term:
+        st.session_state[key] = None
+        _use_suggestion(term, go)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _pulse(db: str) -> list[tuple[str, int]]:
     """Headline counts, as evidence there is something here worth searching.
@@ -695,10 +809,15 @@ def _papers_search() -> None:
 
     db = st.session_state["db"]
     if not query:
-        cols = st.columns(len(_SUGGESTIONS) + 1)
-        cols[0].caption("Try")
-        for col, term in zip(cols[1:], _SUGGESTIONS):
-            col.button(term, key=f"sugg-{term}", on_click=_use_suggestion, args=(term,))
+        st.caption("Try")
+        st.pills(
+            "Suggestions",
+            _SUGGESTIONS,
+            key="search_sugg",
+            on_change=_suggestion_picked,
+            args=("search_sugg", False),
+            label_visibility="collapsed",
+        )
         return
 
     try:
