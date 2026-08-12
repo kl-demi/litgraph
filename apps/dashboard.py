@@ -1961,6 +1961,69 @@ def page_organism(taxon_id: str) -> None:
     )
 
 
+# What each type is, in one line. Editorial by necessity -- the schema records shape,
+# never meaning. A type with no entry falls back to a generic line rather than showing
+# nothing, so an unfamiliar corpus is still readable.
+_TYPE_NOTES = {
+    # Core paper graph
+    "Paper": "A publication ingested from arXiv, PubMed or Kaggle. Stubs are title-only "
+             "placeholders created by someone else's citation.",
+    "Author": "One author. Keyed on the name itself, so two researchers sharing a name "
+              "collapse into a single node.",
+    "Category": "A subject term a paper is filed under — arXiv categories and MeSH descriptors.",
+    # Biology
+    "Gene": "A gene, keyed on its NCBI Entrez id.",
+    "Compound": "A chemical, keyed on its MeSH descriptor.",
+    "Organism": "A species, keyed on its NCBI Taxonomy id.",
+    "Disease": "A disease, keyed on its MeSH descriptor. The Disease Ontology loader adds "
+               "its DOID and its place in the hierarchy.",
+    "Pathway": "A biological process, from Gene Ontology or Reactome.",
+    "Trait": "A measurable phenotype, from Oryzabase. Rice corpus only.",
+    # Edges
+    "CITES": "One paper citing another.",
+    "AUTHORED": "An author to a paper they wrote.",
+    "IN_CATEGORY": "A paper to a subject term it is filed under.",
+    "MENTIONS": "An entity named in a paper's title or abstract, found by an extractor. "
+                "Evidence that the two were discussed together, not that they interact.",
+    "PARTICIPATES_IN": "A gene taking part in a pathway. Asserted by an ontology, not drawn "
+                       "from the literature in this graph.",
+    "PRODUCES": "A pathway to a compound it produces.",
+    "ASSOCIATED_WITH": "A gene linked to a phenotype, from Oryzabase.",
+    "IS_A": "A disease that is a subtype of another, projected from the Disease Ontology "
+            "hierarchy onto MeSH-keyed nodes.",
+    # Bookkeeping
+    "GraphStats": "Bookkeeping: one row of cached counters, so the overview never has to "
+                  "scan the graph.",
+    "IngestState": "Bookkeeping: ingestion checkpoints, so a scheduled run resumes where the "
+                   "last one stopped.",
+    "PubtatorChecked": "Bookkeeping: which papers PubTator has already been asked about, so a "
+                       "re-run doesn't refetch them.",
+    "ExtractionChecked": "Bookkeeping: which papers each extractor has already examined, so a "
+                         "second extractor sees the corpus as unchecked.",
+}
+_VERTEX_FALLBACK = "No description recorded for this type yet."
+_EDGE_FALLBACK = "No description recorded for this edge type yet."
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _edge_endpoints(db: str) -> dict[str, list[str]]:
+    """Which node types each edge type actually joins, sampled from the data.
+
+    Measured rather than read off the registry: MENTIONS is declared Paper -> Gene but
+    also reaches Compound, Organism and Disease, and only the data shows that.
+    """
+    try:
+        _, edges, _ = _schema_graph(db)
+    except httpx.HTTPError:
+        return {}
+    found: dict[str, list[str]] = {}
+    for src, dst, rel in edges:
+        pair = f"{src} → {dst}"
+        if pair not in found.setdefault(rel, []):
+            found[rel].append(pair)
+    return {rel: sorted(pairs) for rel, pairs in found.items()}
+
+
 def _pick_type(group_key: str, other_key: str) -> None:
     """Selecting in one pill group clears the other, so one type is inspected at a time."""
     if st.session_state.get(group_key):
@@ -1980,7 +2043,22 @@ def page_database() -> None:
         return
 
     by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
-    vertex = [t for t in by_count if t["type"] == "vertex"]
+    # Bookkeeping types record how ingestion ran, not what the corpus contains. They are
+    # hidden by default: a researcher reading "PubtatorChecked · 51,166" alongside
+    # "Paper · 51,166" reasonably reads it as a second corpus.
+    show_internal = st.toggle(
+        "Show ingestion bookkeeping types",
+        key=f"dbtype-internal-{db}",
+        help="GraphStats, IngestState and the per-extractor coverage tables.",
+    )
+    vertex = [
+        t
+        for t in by_count
+        if t["type"] == "vertex" and (show_internal or t["name"] not in _BOOKKEEPING_TYPES)
+    ]
+    hidden = sum(
+        1 for t in by_count if t["type"] == "vertex" and t["name"] in _BOOKKEEPING_TYPES
+    )
     edge = [t for t in by_count if t["type"] == "edge"]
     vlabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in vertex}
     elabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in edge}
@@ -1991,7 +2069,10 @@ def page_database() -> None:
     if vkey not in st.session_state and ekey not in st.session_state and vlabels:
         st.session_state[vkey] = next(iter(vlabels))
 
-    st.caption(f"NODE TYPES ({len(vertex)})")
+    st.caption(
+        f"NODE TYPES ({len(vertex)})"
+        + (f" · {hidden} bookkeeping hidden" if hidden and not show_internal else "")
+    )
     st.pills("Node types", list(vlabels), key=vkey, on_change=_pick_type,
              args=(vkey, ekey), label_visibility="collapsed")
     st.caption(f"EDGE TYPES ({len(edge)})")
@@ -2000,6 +2081,7 @@ def page_database() -> None:
 
     chosen = vlabels.get(st.session_state.get(vkey) or "") or elabels.get(st.session_state.get(ekey) or "")
     if chosen is None:
+        # Toggling bookkeeping off can strip the current selection out of the options.
         st.caption("Select a type above.")
         return
 
@@ -2019,6 +2101,24 @@ def page_database() -> None:
         if chosen.get("buckets"):
             bits.append(f"{len(chosen['buckets'])} buckets")
         st.caption(" · ".join(bits))
+
+        is_edge = chosen["type"] == "edge"
+        st.write(
+            _TYPE_NOTES.get(chosen["name"], _EDGE_FALLBACK if is_edge else _VERTEX_FALLBACK)
+        )
+        if is_edge:
+            pairs = _edge_endpoints(db).get(chosen["name"], [])
+            if pairs:
+                st.markdown(
+                    "**Connects** &nbsp;"
+                    + " &nbsp;·&nbsp; ".join(f"`{pair}`" for pair in pairs),
+                    unsafe_allow_html=True,
+                )
+                st.caption("Endpoints sampled from 200 edges of this type.")
+            elif chosen.get("records"):
+                st.caption("Endpoints could not be sampled for this edge type.")
+            else:
+                st.caption("No edges of this type in this database, so it connects nothing yet.")
 
         col_props, col_idx = st.columns(2)
         with col_props:
