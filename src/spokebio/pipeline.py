@@ -251,3 +251,4 @@ def run_reactome_ingest(
         f"processed {totals['produces_processed']} distinct pairs, "
         f"+{totals['new_produces_edges']} new PRODUCES edges"
     )
+    return totals
