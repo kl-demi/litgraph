@@ -1,0 +1,55 @@
+# LitGraph theme: warm neutrals, one acid accent, humanist body + editorial display.
+# Set declaratively here rather than as CSS overrides, so Streamlit's own widgets
+# (inputs, tabs, dataframes, charts) inherit it instead of fighting it.
+
+[theme]
+base = "light"
+
+# Warm neutrals. The paper is a cream rather than white, so the acid reads as an
+# accent against it rather than as UI chrome.
+backgroundColor = "#FBF9F5"
+secondaryBackgroundColor = "#F1ECE3"
+textColor = "#1C1917"
+borderColor = "#E4DBCE"
+
+# The one acid note: primary buttons, focus rings, selected controls. Links use a
+# deep olive from the same hue family -- the acid itself is far too light to read
+# as text on cream (it fails contrast badly at ~1.4:1).
+primaryColor = "#B8D400"
+linkColor = "#5E6B10"
+linkUnderline = false
+
+# A humanist sans for reading, a wide display grotesque for headings. Instrument Serif
+# was the first choice and was replaced: its tight fit and delicate high-contrast
+# strokes read as cramped at heading sizes. Bricolage keeps the distinctiveness with
+# open apertures and real weight behind it.
+#
+# These are the bare "<family>:<url>" form on purpose. Appending a CSS fallback stack
+# (", Georgia, serif") does NOT produce fallbacks -- Streamlit folds the whole
+# remainder into the stylesheet href, requesting
+# ".../css2?family=...&display=swap,%20Georgia,%20serif". Google happens to tolerate
+# that today, but it is a malformed request; the browser's own default is the fallback
+# if a fetch fails. A URL with a comma in it (a variable font's axis tuple) is
+# unusable here for the same reason.
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+headingFont = "Bricolage Grotesque:https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400..800&display=swap"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
+
+headingFontWeights = [700, 600, 600, 600, 600, 600]
+
+# Precise rather than soft: small radii, visible field borders.
+baseRadius = "0.25rem"
+buttonRadius = "0.25rem"
+showWidgetBorder = true
+
+# Matches the node palette in apps/dashboard.py (Paper, Gene, Pathway, Trait,
+# Compound, Organism, Category), so charts and graphs read as one system.
+chartCategoricalColors = ["#57534E", "#6F7F1F", "#B2643A", "#3F7370", "#7A5980", "#A2812A", "#8C8279"]
+
+[theme.sidebar]
+backgroundColor = "#F4EFE5"
+borderColor = "#E4DBCE"
+
+[client]
+# Hide the Deploy button and dev menu: this is an app, not a notebook.
+toolbarMode = "minimal"

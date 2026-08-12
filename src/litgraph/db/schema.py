@@ -44,6 +44,8 @@ IN_CATEGORY = EdgeType("IN_CATEGORY", src="Paper", dst="Category")
 
 AUTHORED = EdgeType("AUTHORED", src="Author", dst="Paper")
 
+
+# Top level call, only actually register when this file is imported
 register(PAPER, CATEGORY, AUTHOR, GRAPH_STATS, CITES, IN_CATEGORY, AUTHORED)
 
 

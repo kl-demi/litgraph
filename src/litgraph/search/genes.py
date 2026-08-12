@@ -21,6 +21,19 @@ RETURN pw.pathway_id AS pathway_id, pw.name AS name, pw.source_db AS source_db,
 LIMIT $limit
 """
 
+_GET_GENE = """
+MATCH (g:Gene {gene_id: $gene_id})
+RETURN g.gene_id AS gene_id, g.name AS name, g.locus_id AS locus_id
+"""
+
+# ASSOCIATED_WITH is loaded from Oryzabase and so far exists only in the rice graph;
+# on a database without it this matches nothing rather than erroring.
+_TRAITS_FOR_GENE = """
+MATCH (g:Gene {gene_id: $gene_id})-[r:ASSOCIATED_WITH]->(t:Trait)
+RETURN t.trait_id AS trait_id, t.name AS name, r.source_db AS source_db
+ORDER BY t.name LIMIT $limit
+"""
+
 _CO_MENTIONED_GENES = """
 MATCH (g:Gene {gene_id: $gene_id})
 MATCH (p:Paper)-[:MENTIONS]->(g)
@@ -49,3 +62,14 @@ def pathways_for_gene(gene_id: str, limit: int = 50) -> list[dict]:
 def co_mentioned_genes(gene_id: str, limit: int = 20) -> list[dict]:
     """Other genes most often mentioned in the same papers as ``gene_id``, most-shared first."""
     return run_read(_CO_MENTIONED_GENES, gene_id=gene_id, limit=limit)
+
+
+def get_gene(gene_id: str) -> dict | None:
+    """The Gene with ``gene_id`` (e.g. ``ncbigene:4340185``), or None if absent."""
+    rows = run_read(_GET_GENE, gene_id=gene_id)
+    return rows[0] if rows else None
+
+
+def traits_for_gene(gene_id: str, limit: int = 25) -> list[dict]:
+    """Phenotype traits the gene is associated with."""
+    return run_read(_TRAITS_FOR_GENE, gene_id=gene_id, limit=limit)

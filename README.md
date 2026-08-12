@@ -49,7 +49,9 @@ For a new database on the shared AWS instance instead of locally, see
 ### See what's in the graph
 
 **Dashboard** — a Streamlit UI over the query layer: overview counts, keyword/semantic
-search, citation and gene neighborhoods drawn as graphs.
+search, citation and gene neighborhoods drawn as graphs, a raw SQL/Cypher query page,
+and a schema browser with per-type record counts. A sidebar dropdown switches between
+the server's databases (e.g. `lg2`, `rice`).
 
 ```bash
 uv sync --extra demo   # once
