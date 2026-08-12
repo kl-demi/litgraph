@@ -21,8 +21,11 @@ GENE = NodeType("Gene", key="gene_id", props=(Prop("name"),), bootstrappable=Tru
 COMPOUND = NodeType("Compound", key="compound_id", props=(Prop("name"),), bootstrappable=True)
 
 # MeSH-keyed, like Compound: PubTator3 normalizes diseases to MeSH descriptors, so a
-# doid_id field holding a MeSH id would misrepresent the data. See ingest/pubtator.py.
-DISEASE = NodeType("Disease", key="disease_id", props=(Prop("name"),), bootstrappable=True)
+# doid_id field holding a MeSH id would misrepresent the data. Disease Ontology maps only
+# ~62% of them, so DOID rides along as a property -- see ingest/disease_ontology.py.
+DISEASE = NodeType(
+    "Disease", key="disease_id", props=(Prop("name"), Prop("doid", indexed=True)), bootstrappable=True
+)
 
 # Bookkeeping node, kept as its own node rather than a Paper property so this never
 # has to write to a Paper vertex (see upsert.py's docstring on the ArcadeDB vector-index bug)
@@ -35,6 +38,7 @@ EXTRACTION_CHECKED = NodeType(
 PATHWAY = NodeType("Pathway", key="pathway_id", props=(Prop("name"), Prop("source_db")))
 
 MENTIONS        = EdgeType("MENTIONS", src="Paper", dst="Gene", props=(Prop("source"),))
+IS_A            = EdgeType("IS_A", src="Disease", dst="Disease")
 PARTICIPATES_IN = EdgeType("PARTICIPATES_IN", src="Gene", dst="Pathway", props=(Prop("evidence_code"),))
 PRODUCES        = EdgeType("PRODUCES", src="Pathway", dst="Compound", props=(Prop("evidence_code"),))
 
@@ -46,6 +50,7 @@ register(
     EXTRACTION_CHECKED,
     PATHWAY,
     MENTIONS,
+    IS_A,
     PARTICIPATES_IN,
     PRODUCES,
 )

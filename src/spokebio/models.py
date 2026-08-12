@@ -9,6 +9,21 @@ class EntityMention(BaseModel):
     name: str
 
 
+class DiseaseXref(BaseModel):
+    """One Disease Ontology term, keyed by the MeSH id it cross-references."""
+
+    disease_id: str  # namespaced, e.g. "mesh:D003920" -- matches the existing Disease key
+    doid: str  # e.g. "DOID:9352"
+    name: str  # DO's label, which supersedes PubTator's mention-derived one
+
+
+class DiseaseIsA(BaseModel):
+    """One Disease -> Disease subtype claim, projected from DO's is_a hierarchy."""
+
+    child_id: str  # namespaced, e.g. "mesh:D002289"
+    parent_id: str  # namespaced, e.g. "mesh:D009369"
+
+
 class Pathway(BaseModel):
     """A biological process/pathway node -- species-agnostic ones from GO's
     biological_process branch (source_db="GO"), human-specific ones from Reactome

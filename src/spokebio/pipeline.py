@@ -9,6 +9,13 @@ from spokebio.ingest.chebi_mesh_crosswalk import (
     ensure_chebi_file,
     ensure_mesh_file,
 )
+from spokebio.ingest.disease_ontology import (
+    DEFAULT_DOID_PATH,
+    ensure_doid_file,
+    extract_disease_xrefs,
+    extract_is_a_edges,
+)
+from spokebio.ingest.disease_ontology import iter_term_stanzas as iter_doid_stanzas
 from spokebio.ingest.go import DEFAULT_OBO_PATH, ensure_obo_file, extract_pathways, iter_term_stanzas
 from spokebio.ingest.pubtator import PubTatorExtractor
 from spokebio.ingest.reactome import (
@@ -17,8 +24,10 @@ from spokebio.ingest.reactome import (
     extract_participates_in,
     extract_produces,
 )
-from spokebio.models import ParticipatesIn, Pathway, Produces
+from spokebio.models import DiseaseIsA, DiseaseXref, ParticipatesIn, Pathway, Produces
 from spokebio.upsert import (
+    upsert_disease_is_a,
+    upsert_disease_xrefs,
     upsert_participates_in,
     upsert_pathways,
     upsert_produces,
@@ -80,6 +89,56 @@ def run_go_ingest(
     console.log(
         f"go-pathways: processed {totals['pathways_processed']} biological_process terms, "
         f"+{totals['new_pathways']} new Pathway nodes"
+    )
+    return totals
+
+
+def run_disease_ontology_ingest(
+    obo_path: str | None = None, batch_size: int = 500, force_download: bool = False
+) -> dict[str, int]:
+    """Ingest Disease Ontology as DOIDs and an is_a hierarchy over MeSH-keyed Disease
+    nodes (see ingest/disease_ontology.py for why Disease stays MeSH-keyed).
+
+    Two passes, xrefs before edges, since the edge pass bootstraps neither endpoint.
+    Downloads doid.obo to ``obo_path`` (default: data/doid.obo) if not already cached
+    there. No Paper interaction, so this is safe alongside another ingestion job.
+    """
+    path = ensure_doid_file(obo_path or DEFAULT_DOID_PATH, force=force_download)
+    totals = {"xrefs_processed": 0, "new_diseases": 0, "is_a_processed": 0, "new_is_a_edges": 0}
+
+    with _progress() as progress:
+        task = progress.add_task("Ingesting Disease Ontology xrefs", total=None)
+        batch: list[DiseaseXref] = []
+        for xref in extract_disease_xrefs(iter_doid_stanzas(path)):
+            batch.append(xref)
+            if len(batch) >= batch_size:
+                totals["new_diseases"] += upsert_disease_xrefs(batch)
+                totals["xrefs_processed"] += len(batch)
+                progress.update(task, advance=len(batch))
+                batch = []
+        if batch:
+            totals["new_diseases"] += upsert_disease_xrefs(batch)
+            totals["xrefs_processed"] += len(batch)
+            progress.update(task, advance=len(batch))
+
+        task = progress.add_task("Ingesting Disease Ontology hierarchy", total=None)
+        edges: list[DiseaseIsA] = []
+        for edge in extract_is_a_edges(iter_doid_stanzas(path)):
+            edges.append(edge)
+            if len(edges) >= batch_size:
+                totals["new_is_a_edges"] += upsert_disease_is_a(edges)
+                totals["is_a_processed"] += len(edges)
+                progress.update(task, advance=len(edges))
+                edges = []
+        if edges:
+            totals["new_is_a_edges"] += upsert_disease_is_a(edges)
+            totals["is_a_processed"] += len(edges)
+            progress.update(task, advance=len(edges))
+
+    console.log(
+        f"disease-ontology: processed {totals['xrefs_processed']} MeSH-mapped terms "
+        f"(+{totals['new_diseases']} new Disease nodes), {totals['is_a_processed']} is_a "
+        f"claims (+{totals['new_is_a_edges']} new IS_A edges)"
     )
     return totals
 

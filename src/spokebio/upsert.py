@@ -2,6 +2,8 @@
 
 Exports:
     upsert_pathways: ontology term nodes (update on match).
+    upsert_disease_xrefs / upsert_disease_is_a: Disease Ontology's DOID + hierarchy,
+        projected onto MeSH-keyed Disease nodes.
     upsert_participates_in / upsert_produces: annotation edges (bootstrap the entity
         endpoint, require the ontology one).
     upsert_mentions: Paper->entity MENTIONS edges plus the entity nodes themselves.
@@ -16,7 +18,7 @@ from datetime import datetime
 
 from litgraph.db.neo4j_client import run_write
 from litgraph.graph.writer import CreateMissing, upsert_edges, upsert_nodes
-from spokebio.models import EntityMention, ParticipatesIn, Pathway, Produces
+from spokebio.models import DiseaseIsA, DiseaseXref, EntityMention, ParticipatesIn, Pathway, Produces
 
 # The MENTIONS destination type per EntityMention.vertex_type. MENTIONS is registered
 # Paper -> Gene, and the others are passed as a `dst` override.
@@ -43,6 +45,33 @@ def upsert_pathways(pathways: list[Pathway]) -> int:
     """
     rows = [{"pathway_id": p.pathway_id, "name": p.name, "source_db": p.source_db} for p in pathways]
     return upsert_nodes("Pathway", rows, update_existing=True)
+
+
+def upsert_disease_xrefs(xrefs: list[DiseaseXref]) -> int:
+    """Upsert Disease nodes carrying DO's DOID and label.
+
+    Updates on match: DO is the authority for a disease's identity, so its label
+    supersedes the mention-derived one PubTator wrote. Ordering-independent -- the
+    mentions pass only ever sets `name` on insert, so it cannot take the label back.
+
+    Returns:
+        int: How many nodes were newly created.
+    """
+    rows = [{"disease_id": x.disease_id, "doid": x.doid, "name": x.name} for x in xrefs]
+    return upsert_nodes("Disease", rows, update_existing=True)
+
+
+def upsert_disease_is_a(edges: list[DiseaseIsA]) -> int:
+    """Upsert Disease -> Disease subtype edges from DO's is_a hierarchy.
+
+    Neither endpoint is bootstrapped: `upsert_disease_xrefs` must have run first, and a
+    key-only Disease with no name or DOID would hide that it hadn't.
+
+    Returns:
+        int: How many edges were newly created.
+    """
+    rows = [{"src": e.child_id, "dst": e.parent_id} for e in edges]
+    return upsert_edges("IS_A", rows, create_missing=CreateMissing.NONE, update_existing=False)
 
 
 def upsert_participates_in(edges: list[ParticipatesIn]) -> int:
