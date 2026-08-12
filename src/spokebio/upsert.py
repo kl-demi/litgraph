@@ -36,6 +36,11 @@ _STAT_KEY = {
     "Disease": "new_diseases",
 }
 
+# The full key set of upsert_mentions' returned stats dict -- the single source of truth
+# for it, so a caller aggregating across batches (extract.py) can't drift out of sync
+# with a stat this module adds or removes.
+MENTION_STAT_KEYS = (*_STAT_KEY.values(), "new_mention_edges", "genes_named")
+
 
 def upsert_pathways(pathways: list[Pathway]) -> int:
     """Upsert Pathway nodes from GO's biological_process branch and Reactome.

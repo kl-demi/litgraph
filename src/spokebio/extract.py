@@ -18,7 +18,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 
 from litgraph.db.neo4j_client import run_read
 from spokebio.models import EntityMention
-from spokebio.upsert import mark_papers_checked, upsert_mentions
+from spokebio.upsert import MENTION_STAT_KEYS, mark_papers_checked, upsert_mentions
 
 console = Console()
 
@@ -68,10 +68,9 @@ def run_extraction(extractor: Extractor, limit: int = 500) -> dict[str, int]:
     rows = run_read(
         _find_unchecked_query(extractor.requires), extractor=extractor.name, limit=limit
     )
-    totals = {
-        "papers_processed": 0, "new_organisms": 0, "new_genes": 0, "new_compounds": 0,
-        "new_mention_edges": 0, "genes_named": 0,
-    }
+    # Every key beyond papers_processed is owned by upsert_mentions -- see
+    # MENTION_STAT_KEYS -- so a stat added there needs no matching edit here.
+    totals = {"papers_processed": 0, **{key: 0 for key in MENTION_STAT_KEYS}}
     if not rows:
         console.log(f"extract[{extractor.name}]: nothing to do")
         return totals
@@ -82,7 +81,7 @@ def run_extraction(extractor: Extractor, limit: int = 500) -> dict[str, int]:
         stats = upsert_mentions(batch, source=extractor.name)
         mark_papers_checked(extractor.name, list(batch), datetime.now(UTC))
         totals["papers_processed"] += len(batch)
-        for key in ("new_organisms", "new_genes", "new_compounds", "new_mention_edges", "genes_named"):
+        for key in MENTION_STAT_KEYS:
             totals[key] += stats[key]
 
     with _progress() as progress:
@@ -110,8 +109,8 @@ def run_extraction(extractor: Extractor, limit: int = 500) -> dict[str, int]:
     console.log(
         f"extract[{extractor.name}]: processed {totals['papers_processed']} papers -- "
         f"+{totals['new_genes']} genes, +{totals['new_compounds']} compounds, "
-        f"+{totals['new_organisms']} organisms, +{totals['new_mention_edges']} MENTIONS edges, "
-        f"named {totals['genes_named']} previously key-only genes"
+        f"+{totals['new_organisms']} organisms, +{totals['new_diseases']} diseases, "
+        f"+{totals['new_mention_edges']} MENTIONS edges, named {totals['genes_named']} previously key-only genes"
     )
     return totals
 

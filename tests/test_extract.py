@@ -1,5 +1,6 @@
 from spokebio.extract import _find_unchecked_query, run_extraction
 from spokebio.models import EntityMention
+from spokebio.upsert import MENTION_STAT_KEYS
 
 
 class FakeExtractor:
@@ -20,7 +21,9 @@ def _mention(entity_id="ncbigene:1"):
 
 
 def _stats(**overrides):
-    stats = {"new_organisms": 0, "new_genes": 0, "new_compounds": 0, "new_mention_edges": 0, "genes_named": 0}
+    """Mirrors the real upsert_mentions return shape via MENTION_STAT_KEYS, so this
+    fixture can't drift out of sync with it the way the hardcoded copy once did."""
+    stats = {key: 0 for key in MENTION_STAT_KEYS}
     stats.update(overrides)
     return stats
 
@@ -30,6 +33,20 @@ def test_candidate_query_filters_on_required_fields():
     assert "AND p.pmid IS NOT NULL AND p.abstract IS NOT NULL" in query
     assert "p.pmid AS pmid, p.abstract AS abstract" in query
     assert "ExtractionChecked {extractor: $extractor, paper_id: p.id}" in query
+
+
+def test_run_extraction_totals_carry_every_upsert_mentions_stat(mocker):
+    """Regression test for a real bug: run_extraction once hardcoded its own key list,
+    so a stat upsert_mentions returned (new_diseases) was silently dropped and a caller
+    reading totals['new_diseases'] hit a KeyError. Asserting the key set stays derived
+    from MENTION_STAT_KEYS, not re-listed, is what would have caught it."""
+    mocker.patch("spokebio.extract.run_read", return_value=[{"id": "pmid:1", "pmid": "1"}])
+    mocker.patch("spokebio.extract.upsert_mentions", return_value=_stats())
+    mocker.patch("spokebio.extract.mark_papers_checked")
+
+    totals = run_extraction(FakeExtractor([("pmid:1", [_mention()])]))
+
+    assert set(totals) == {"papers_processed", *MENTION_STAT_KEYS}
 
 
 def test_run_extraction_upserts_with_the_extractor_as_source(mocker):
