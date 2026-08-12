@@ -181,7 +181,9 @@ def test_update_existing_refreshes_edge_properties(arcadedb):
         create_missing=CreateMissing.SRC,
         update_existing=True,
     )
-    assert "UPDATE EDGE PARTICIPATES_IN SET evidence_code = $r.evidence_code" in _sql(arcadedb)
+    # No "EDGE" keyword -- see writer.py's comment: ArcadeDB 26.8.1 misparses
+    # "UPDATE EDGE <type> SET ..." as looking up a type literally named EDGE.
+    assert "UPDATE PARTICIPATES_IN SET evidence_code = $r.evidence_code" in _sql(arcadedb)
 
 
 def test_update_existing_false_never_restamps_an_edge(arcadedb):

@@ -175,7 +175,13 @@ def _sql_edges(
     assignments = ", ".join(f"{prop} = $r.{prop}" for prop in props)
     create_tail = f" SET {assignments}" if assignments else ""
     update = (
-        f"      UPDATE EDGE {edge.name} SET {assignments} WHERE @out = $srcRid AND @in = $dstRid;"
+        # No "EDGE" keyword: on this server (confirmed on ArcadeDB 26.8.1) "UPDATE EDGE
+        # <type> SET ... WHERE ..." raises SchemaException "Type with name 'EDGE' was
+        # not found" -- the parser resolves "EDGE" itself as the target type instead of
+        # treating it as the vertex/edge disambiguator. Dropping it is unambiguous since
+        # edge and vertex type names share one namespace; "UPDATE {type} SET ..." alone
+        # resolves correctly regardless of which kind {type} is.
+        f"      UPDATE {edge.name} SET {assignments} WHERE @out = $srcRid AND @in = $dstRid;"
         if update_existing and assignments
         else ""
     )
