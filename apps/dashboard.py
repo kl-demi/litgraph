@@ -32,6 +32,7 @@ from litgraph.search.compounds import get_compound, papers_mentioning_compound, 
 from litgraph.search.corpus import placeholder as corpus_placeholder
 from litgraph.search.corpus import suggestions as corpus_suggestions
 from litgraph.search.entities import search_entities, searchable_types
+from litgraph.search.entity_detail import get_record, neighbours
 from litgraph.search.genes import (
     co_mentioned_genes,
     get_gene,
@@ -204,8 +205,9 @@ def _clip(text: str | None, n: int = 45) -> str:
 # DOI, arXiv) stay markdown links, where the new tab is wanted.
 
 
-# Node kinds with a page of their own -> the view name the router understands.
-_VIEW_KINDS = {
+# Types with a page written for them. Everything else a database offers falls to the
+# generic page, so a new type is reachable the moment it appears in the schema.
+_BESPOKE_KINDS = {
     "Paper": "paper",
     "Gene": "gene",
     "Pathway": "pathway",
@@ -213,6 +215,19 @@ _VIEW_KINDS = {
     "Compound": "compound",
     "Organism": "organism",
 }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _view_kinds(db: str) -> dict[str, str]:
+    """Node kind -> the view name the router understands, for this database."""
+    kinds = dict(_BESPOKE_KINDS)
+    for label in searchable_types():
+        kinds.setdefault(label, label.lower())
+    return kinds
+
+
+def _kind_view(kind: str) -> str | None:
+    return _view_kinds(st.session_state.get("db", "")).get(kind)
 
 
 def _nav_to(kind: str, entity_id: str) -> None:
@@ -356,13 +371,13 @@ def _node_detail(key: str, nodes: dict, meta: dict) -> None:
     st.markdown(f"#### {_md_escape(str(detail.get('name') or label))}")
     for field, value in (detail.get("fields") or {}).items():
         st.caption(f"{field}: {value}")
-    if kind in _VIEW_KINDS:
+    if _kind_view(kind):
         st.button(
             f"Visit {kind.lower()}",
             key=f"{key}--open",
             type="primary",
             on_click=_nav_to,
-            args=(_VIEW_KINDS[kind], selected),
+            args=(_kind_view(kind), selected),
         )
 
 
@@ -983,7 +998,7 @@ def _papers_search() -> None:
                         row["id"],
                         row["id"],
                         key=f"ent-{label}-{row['id']}",
-                        view_kind=_VIEW_KINDS.get(label),
+                        view_kind=_kind_view(label),
                     )
 
     st.subheader("Papers")
@@ -1709,6 +1724,88 @@ def page_trait(trait_id: str) -> None:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _entity_bundle(db: str, label: str, key: str, entity_id: str) -> dict:
+    key_map = dict(searchable_types())
+    key_map["Paper"] = "id"
+    return {
+        "record": get_record(label, key, entity_id),
+        "neighbours": neighbours(label, key, entity_id, key_map, limit=60),
+    }
+
+
+def page_entity(label: str, entity_id: str) -> None:
+    """The page any type gets when no one has written a bespoke one for it.
+
+    Everything is read from the schema, so a type introduced by a new corpus -- Disease
+    in the human graph -- is browsable without a code change.
+    """
+    db = st.session_state["db"]
+    st.button("← Back", type="tertiary", key=f"back-{label}", on_click=_nav_back)
+    key = searchable_types().get(label)
+    if not key:
+        st.error(f"`{label}` is not a type in this database.")
+        return
+    data = _entity_bundle(db, label, key, entity_id)
+    record = data["record"]
+    if record is None:
+        st.error(f"No {label.lower()} with id `{entity_id}` in this database.")
+        return
+
+    st.markdown(_kind_badge(label), unsafe_allow_html=True)
+    st.title(record.get("name") or entity_id)
+    st.caption(
+        " · ".join(
+            str(v) for k, v in record.items() if k != "name" and not k.startswith("@") and v
+        )
+    )
+
+    rows = data["neighbours"]
+    if not rows:
+        st.caption("Nothing connects to this record yet.")
+        return
+
+    # Grouped by the edge and the kind at the other end, which is the only structure
+    # available without knowing what the type means.
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        groups.setdefault((row["rel"], row["kind"]), []).append(row)
+
+    cols = st.columns(min(len(groups), 4))
+    for col, ((rel, kind), items) in zip(cols, sorted(groups.items())):
+        col.metric(f"{rel} · {kind}", len(items))
+    st.caption("Counts reflect what this page loads, capped at 60 connections.")
+
+    nodes = {entity_id: (_clip(record.get("name"), 28), label)}
+    meta = {entity_id: node_meta(record.get("name"), **{key: entity_id})}
+    edges = []
+    for row in rows[:20]:
+        if not row["id"]:
+            continue
+        nodes[row["id"]] = (_clip(row["label"], 28), row["kind"])
+        meta[row["id"]] = node_meta(row["label"], id=row["id"])
+        edges.append((row["id"], entity_id, row["rel"]))
+    if edges:
+        _graph_canvas(nodes, edges, key=f"entity-graph-{label}-{entity_id}", meta=meta)
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
+
+    for (rel, kind), items in sorted(groups.items()):
+        st.subheader(f"{rel} · {kind} ({len(items)})")
+        _card_grid(
+            [
+                {
+                    "kind": kind,
+                    "title": row["label"] or row["id"],
+                    "meta": row["id"] or "",
+                    "entity_id": row["id"] or "",
+                    "key": f"gen-{label}-{rel}-{row['id']}",
+                    "view_kind": _kind_view(kind) if row["id"] else None,
+                }
+                for row in items
+            ]
+        )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _compound_bundle(db: str, compound_id: str) -> dict:
     return {
         "compound": get_compound(compound_id),
@@ -2045,12 +2142,27 @@ _ENTITY_VIEWS = {
     "organism": page_organism,
 }
 
+
+def _open_view(view: str, entity_id: str) -> None:
+    """Dispatch a view name to its page, falling back to the generic one. View names
+    are lowercase type names, so an unrecognised one is matched back to its label."""
+    page = _ENTITY_VIEWS.get(view)
+    if page:
+        page(entity_id)
+        return
+    label = next((k for k in searchable_types() if k.lower() == view), None)
+    if label:
+        page_entity(label, entity_id)
+    else:
+        st.error(f"`{view}` is not a type in this database.")
+
 # Entity views live in session state (so navigation is same-tab and Back can restore
 # where you were); the URL only mirrors the view for sharing, and seeds it once when a
 # shared link starts a fresh session.
 if "view" not in st.session_state:
+    _candidates = list(_ENTITY_VIEWS) + [k.lower() for k in searchable_types()]
     st.session_state["view"] = next(
-        ((kind, st.query_params[kind]) for kind in _ENTITY_VIEWS if st.query_params.get(kind)),
+        ((kind, st.query_params[kind]) for kind in _candidates if st.query_params.get(kind)),
         None,
     )
     st.session_state.setdefault("nav_stack", [])
@@ -2060,7 +2172,7 @@ _browser_behaviours()
 _view = st.session_state["view"]
 if _view:
     st.query_params.from_dict({_view[0]: _view[1]})
-    _ENTITY_VIEWS[_view[0]](_view[1])
+    _open_view(_view[0], _view[1])
 else:
     # `edit` survives the clear: it switches on the backdrop position editor, and the
     # rewrite that drops stale entity params would otherwise strip it on every rerun.
