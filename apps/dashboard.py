@@ -812,8 +812,10 @@ def page_home() -> None:
     records = full + stubs
     st.markdown("**Paper coverage**")
     _coverage("Full records", full, records, "Paper records")
-    _coverage("Enriched", data["enriched"], full, "full papers")
-    _coverage("Embedded", data["embedded"], full, "full papers")
+    if data["enriched"]:
+        _coverage("Enriched", data["enriched"], full, "full papers")
+    if data["embedded"]:
+        _coverage("Embedded", data["embedded"], full, "full papers")
     st.caption(
         "A stub is a placeholder created by a citation edge and holds a title at most, so it "
         "can be neither enriched nor embedded. Both percentages are measured against full "
