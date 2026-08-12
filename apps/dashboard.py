@@ -152,6 +152,15 @@ st.markdown(
         font-size: 1.3rem !important; font-weight: 600 !important;
         line-height: 1.3 !important; white-space: normal !important;
     }
+    /* The bookkeeping disclosure, in the shape of a browser's "Advanced" link: findable
+       but quiet enough that it never reads as part of the schema. */
+    [class*="st-key-dbadv-"] div[data-testid="stButton"] button[kind="tertiary"]
+    div[data-testid="stMarkdownContainer"] p {
+        font-size: 0.78rem !important; font-weight: 400 !important;
+        text-decoration: underline; text-underline-offset: 3px;
+    }
+    [class*="st-key-dbadv-"] button { color: #8C8279 !important; }
+    [class*="st-key-dbadv-"] button:hover { color: #57534E !important; }
 
     /* Landing backdrop. Nodes are percentage-positioned HTML so they stay circular and
        track the container the same way the copy and the search bar do; only the edges
@@ -1961,8 +1970,8 @@ def page_organism(taxon_id: str) -> None:
     )
 
 
-# What each type is, in one line. Editorial by necessity -- the schema records shape,
-# never meaning. A type with no entry falls back to a generic line rather than showing
+# Short description of each type, for display on dashboard.
+# A type with no entry falls back to a generic line rather than showing
 # nothing, so an unfamiliar corpus is still readable.
 _TYPE_NOTES = {
     # Core paper graph
@@ -2024,10 +2033,18 @@ def _edge_endpoints(db: str) -> dict[str, list[str]]:
     return {rel: sorted(pairs) for rel, pairs in found.items()}
 
 
-def _pick_type(group_key: str, other_key: str) -> None:
-    """Selecting in one pill group clears the other, so one type is inspected at a time."""
+def _pick_type(group_key: str, *other_keys: str) -> None:
+    """Selecting in one pill group clears the others, so one type is inspected at a time."""
     if st.session_state.get(group_key):
-        st.session_state[other_key] = None
+        for key in other_keys:
+            st.session_state[key] = None
+
+
+def _toggle_bookkeeping(flag_key: str, group_key: str) -> None:
+    """Collapsing the disclosure also drops any selection made inside it."""
+    st.session_state[flag_key] = not st.session_state.get(flag_key, False)
+    if not st.session_state[flag_key]:
+        st.session_state[group_key] = None
 
 
 def page_database() -> None:
@@ -2043,25 +2060,16 @@ def page_database() -> None:
         return
 
     by_count = sorted(types, key=lambda t: t.get("records", 0), reverse=True)
-    # Bookkeeping types record how ingestion ran, not what the corpus contains. They are
-    # hidden by default: a researcher reading "PubtatorChecked · 51,166" alongside
-    # "Paper · 51,166" reasonably reads it as a second corpus.
-    show_internal = st.toggle(
-        "Show ingestion bookkeeping types",
-        key=f"dbtype-internal-{db}",
-        help="GraphStats, IngestState and the per-extractor coverage tables.",
-    )
-    vertex = [
-        t
-        for t in by_count
-        if t["type"] == "vertex" and (show_internal or t["name"] not in _BOOKKEEPING_TYPES)
-    ]
-    hidden = sum(
-        1 for t in by_count if t["type"] == "vertex" and t["name"] in _BOOKKEEPING_TYPES
-    )
+    # Bookkeeping types record how ingestion ran, not what the corpus contains, so they
+    # live behind a disclosure at the foot of the page rather than beside the real types.
+    adv_key, ikey = f"dbtype-adv-{db}", f"dbtype-i-{db}"
+    show_internal = st.session_state.get(adv_key, False)
+    vertex = [t for t in by_count if t["type"] == "vertex" and t["name"] not in _BOOKKEEPING_TYPES]
+    internal = [t for t in by_count if t["type"] == "vertex" and t["name"] in _BOOKKEEPING_TYPES]
     edge = [t for t in by_count if t["type"] == "edge"]
     vlabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in vertex}
     elabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in edge}
+    ilabels = {f"{t['name']} · {t.get('records', 0):,}": t for t in internal}
 
     # Keys are per-database: a stale selection whose label (the count) no longer exists
     # in the options would otherwise be silently dropped.
@@ -2069,19 +2077,36 @@ def page_database() -> None:
     if vkey not in st.session_state and ekey not in st.session_state and vlabels:
         st.session_state[vkey] = next(iter(vlabels))
 
-    st.caption(
-        f"NODE TYPES ({len(vertex)})"
-        + (f" · {hidden} bookkeeping hidden" if hidden and not show_internal else "")
-    )
+    st.caption(f"NODE TYPES ({len(vertex)})")
     st.pills("Node types", list(vlabels), key=vkey, on_change=_pick_type,
-             args=(vkey, ekey), label_visibility="collapsed")
+             args=(vkey, ekey, ikey), label_visibility="collapsed")
     st.caption(f"EDGE TYPES ({len(edge)})")
     st.pills("Edge types", list(elabels), key=ekey, on_change=_pick_type,
-             args=(ekey, vkey), label_visibility="collapsed")
+             args=(ekey, vkey, ikey), label_visibility="collapsed")
 
-    chosen = vlabels.get(st.session_state.get(vkey) or "") or elabels.get(st.session_state.get(ekey) or "")
+    if internal:
+        st.button(
+            "Hide advanced" if show_internal else "Advanced",
+            key=f"dbadv-{db}",
+            type="tertiary",
+            on_click=_toggle_bookkeeping,
+            args=(adv_key, ikey),
+        )
+        if show_internal:
+            st.caption(f"INGESTION BOOKKEEPING ({len(internal)})")
+            st.pills("Bookkeeping types", list(ilabels), key=ikey, on_change=_pick_type,
+                     args=(ikey, vkey, ekey), label_visibility="collapsed")
+            st.caption(
+                "Written by the ingestion pipeline to record which papers it has already "
+                "processed. Not part of the corpus."
+            )
+
+    chosen = (
+        vlabels.get(st.session_state.get(vkey) or "")
+        or elabels.get(st.session_state.get(ekey) or "")
+        or (ilabels.get(st.session_state.get(ikey) or "") if show_internal else None)
+    )
     if chosen is None:
-        # Toggling bookkeeping off can strip the current selection out of the options.
         st.caption("Select a type above.")
         return
 
@@ -2098,8 +2123,6 @@ def page_database() -> None:
         bits = [f"{chosen.get('records', 0):,} records"]
         if chosen.get("parentTypes"):
             bits.append(f"extends {', '.join(chosen['parentTypes'])}")
-        if chosen.get("buckets"):
-            bits.append(f"{len(chosen['buckets'])} buckets")
         st.caption(" · ".join(bits))
 
         is_edge = chosen["type"] == "edge"
