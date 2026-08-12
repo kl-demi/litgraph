@@ -146,6 +146,16 @@ describes only the current state; this file is where "used to be" lives.
   `arcadedb-vector-warmup.service`, a oneshot unit that absorbs the first-query rebuild
   after every restart (504s → 1.3s measured). Details in `docs/known_bugs.md`.
 
+- **2026-08-11/12** — Disease added as an entity type. PubTator's Disease annotations
+  are kept as nodes (MeSH-keyed, like Compound), and a Disease Ontology loader enriches
+  them with DO's name and `doid` plus an `IS_A` hierarchy projected onto MeSH keys.
+  `check_pathway_releases.py` reports the DO release alongside GO and Reactome.
+- **2026-08-12** — the Streamlit dashboard was rebuilt and merged from `frontend`:
+  search-first UI, entity pages for every connected type plus a schema-driven fallback,
+  a SQL/Cypher console rendering results as graphs, and per-database search hints read
+  from the live schema. `apps/gene_explainer.py` was deleted — the dashboard supersedes
+  it. Design notes are kept out of the repo (`docs/frontend.*` is gitignored).
+
 ## Documentation
 
 - `docs/plant_schema.md` — superseded 2026-07-24, kept as historical record.
@@ -158,4 +168,5 @@ describes only the current state; this file is where "used to be" lives.
   pending work: rather than keep fixing `lg2`'s write-performance pathology in place, the
   plan is a fresh database, so nothing needs migrating. §12's TODOs replaced with two next
   steps: LLM-based entity/relationship extraction from paper text, and a dashboard app
-  (`search/genes.py` and `apps/gene_explainer.py` are early groundwork for the latter).
+  (`search/genes.py` and `apps/gene_explainer.py` were early groundwork for the latter;
+  the dashboard landed 2026-08-12 and the explainer was removed).

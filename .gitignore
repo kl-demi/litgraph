@@ -12,4 +12,5 @@ build/
 inspect_db.sql
 data/
 docs/*.html
+docs/frontend.md
 logs/
