@@ -11,6 +11,7 @@ ENTITY_KEYS = {
     "Pathway": "pathway_id",
     "Trait": "trait_id",
     "Compound": "compound_id",
+    "Organism": "taxon_id",
 }
 
 # Searchable properties beyond name and the natural key. locus_id is how rice

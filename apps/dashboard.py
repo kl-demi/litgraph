@@ -28,6 +28,7 @@ from litgraph.db.arcadedb_http import list_databases, run_query, run_raw
 from litgraph.db.context import set_database
 from litgraph.ingest.embeddings import embed_texts
 from litgraph.search.citations import get_citing_papers, get_references, most_cited
+from litgraph.search.compounds import get_compound, papers_mentioning_compound, pathways_producing
 from litgraph.search.entities import search_entities
 from litgraph.search.genes import (
     co_mentioned_genes,
@@ -37,6 +38,7 @@ from litgraph.search.genes import (
     traits_for_gene,
 )
 from litgraph.search.keyword import keyword_search
+from litgraph.search.organisms import genes_for_organism, get_organism, papers_mentioning_organism
 from litgraph.search.papers import authors_of, categories_of, genes_in, get_paper
 from litgraph.search.pathways import compounds_produced, genes_in_pathway, get_pathway, papers_for_pathway
 from litgraph.search.traits import genes_for_trait, get_trait, papers_for_trait
@@ -200,7 +202,14 @@ def _clip(text: str | None, n: int = 45) -> str:
 
 
 # Node kinds with a page of their own -> the view name the router understands.
-_VIEW_KINDS = {"Paper": "paper", "Gene": "gene", "Pathway": "pathway", "Trait": "trait"}
+_VIEW_KINDS = {
+    "Paper": "paper",
+    "Gene": "gene",
+    "Pathway": "pathway",
+    "Trait": "trait",
+    "Compound": "compound",
+    "Organism": "organism",
+}
 
 
 def _nav_to(kind: str, entity_id: str) -> None:
@@ -818,7 +827,7 @@ _SEARCH_MODES = {
     "Semantic": (semantic_search, "distance", "Finds papers that mean something similar, in whatever words."),
 }
 
-_ENTITY_LABELS = ("Gene", "Pathway", "Trait", "Compound")
+_ENTITY_LABELS = ("Gene", "Pathway", "Trait", "Compound", "Organism")
 
 # Deliberately spread across the entity types, so the first click teaches what the
 # graph holds. Tuned to the rice corpus; revisit when the bio reingest lands.
@@ -1677,6 +1686,162 @@ def page_trait(trait_id: str) -> None:
     _evidence_papers(papers, f"trp-{trait_id}", "trait")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _compound_bundle(db: str, compound_id: str) -> dict:
+    return {
+        "compound": get_compound(compound_id),
+        "papers": papers_mentioning_compound(compound_id, limit=25),
+        "pathways": pathways_producing(compound_id, limit=25),
+    }
+
+
+def page_compound(compound_id: str) -> None:
+    st.button("← Back", type="tertiary", key="back-compound", on_click=_nav_back)
+    data = _compound_bundle(st.session_state["db"], compound_id)
+    compound = data["compound"]
+    if compound is None:
+        st.error(f"No compound with id `{compound_id}` in this database.")
+        return
+
+    papers, pathways = data["papers"], data["pathways"]
+    st.title(compound.get("name") or compound_id)
+    st.caption(compound_id)
+
+    cols = st.columns(2)
+    cols[0].metric("Papers", len(papers))
+    cols[1].metric("Pathways", len(pathways))
+    st.caption("Counts reflect what this page loads, capped at 25 per section.")
+
+    if papers or pathways:
+        nodes = {compound_id: (_clip(compound.get("name"), 28), "Compound")}
+        meta = {compound_id: node_meta(compound.get("name"), compound_id=compound_id)}
+        edges = []
+        for row in pathways[:8]:
+            nodes[row["pathway_id"]] = (_clip(row["name"], 28), "Pathway")
+            meta[row["pathway_id"]] = node_meta(row["name"], pathway_id=row["pathway_id"])
+            edges.append((row["pathway_id"], compound_id, "PRODUCES"))
+        for row in papers[:10]:
+            nodes[row["id"]] = (_clip(row.get("title"), 30), "Paper")
+            meta[row["id"]] = node_meta(row.get("title"), id=row["id"])
+            edges.append((row["id"], compound_id, "MENTIONS"))
+        if edges:
+            _graph_canvas(nodes, edges, key=f"compound-graph-{compound_id}", meta=meta)
+            st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
+
+    st.subheader(f"Produced by pathways ({len(pathways)})")
+    if pathways:
+        _card_grid(
+            [
+                {
+                    "kind": "Pathway",
+                    "title": row["name"],
+                    "meta": " · ".join(
+                        filter(None, (row["pathway_id"], row.get("source_db"), row.get("evidence_code")))
+                    ),
+                    "entity_id": row["pathway_id"],
+                    "key": f"cpw-{row['pathway_id']}",
+                    "view_kind": "pathway",
+                }
+                for row in pathways
+            ]
+        )
+    else:
+        st.caption("No pathway records this compound as a product in this database.")
+
+    st.subheader(f"Papers mentioning this compound ({len(papers)})")
+    if not papers:
+        st.caption("No papers mention this compound.")
+        return
+    _card_grid(
+        [
+            {
+                "kind": "Paper",
+                "title": row.get("title"),
+                "meta": " · ".join(
+                    filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))
+                ),
+                "entity_id": row["id"],
+                "key": f"cp-{row['id']}",
+                "view_kind": "paper",
+            }
+            for row in papers
+        ]
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _organism_bundle(db: str, taxon_id: str) -> dict:
+    return {
+        "organism": get_organism(taxon_id),
+        "papers": papers_mentioning_organism(taxon_id, limit=25),
+        "genes": genes_for_organism(taxon_id, limit=15),
+    }
+
+
+def page_organism(taxon_id: str) -> None:
+    st.button("← Back", type="tertiary", key="back-organism", on_click=_nav_back)
+    data = _organism_bundle(st.session_state["db"], taxon_id)
+    organism = data["organism"]
+    if organism is None:
+        st.error(f"No organism with taxon id `{taxon_id}` in this database.")
+        return
+
+    papers, genes = data["papers"], data["genes"]
+    st.title(organism.get("name") or taxon_id)
+    st.caption(f"taxon {taxon_id}")
+
+    cols = st.columns(2)
+    cols[0].metric("Papers", len(papers))
+    cols[1].metric("Co-mentioned genes", len(genes))
+    st.caption("Counts reflect what this page loads, capped at 25 papers and 15 genes.")
+
+    if genes:
+        nodes = {taxon_id: (organism.get("name") or taxon_id, "Organism")}
+        meta = {taxon_id: node_meta(organism.get("name"), taxon_id=taxon_id)}
+        edges = []
+        for row in genes[:12]:
+            nodes[row["gene_id"]] = (row["name"] or row["gene_id"], "Gene")
+            meta[row["gene_id"]] = node_meta(
+                row["name"], gene_id=row["gene_id"], shared_papers=row["shared_papers"]
+            )
+            edges.append((taxon_id, row["gene_id"], f"co-mentioned ×{row['shared_papers']}"))
+        _graph_canvas(nodes, edges, key=f"organism-graph-{taxon_id}", meta=meta)
+        st.caption("Drag to pan, scroll to zoom. Select a node to see its details.")
+
+    st.subheader(f"Co-mentioned genes ({len(genes)})")
+    if genes:
+        _gene_pills(
+            [(f"{row['name'] or row['gene_id']} ({row['shared_papers']})", row["gene_id"]) for row in genes],
+            key=f"organism-genes-{taxon_id}",
+        )
+        st.caption(
+            "Genes named in the same papers as this organism, by number of shared papers. "
+            "Co-mention is not interaction."
+        )
+    else:
+        st.caption("No genes are mentioned alongside this organism.")
+
+    st.subheader(f"Papers mentioning this organism ({len(papers)})")
+    if not papers:
+        st.caption("No papers mention this organism.")
+        return
+    _card_grid(
+        [
+            {
+                "kind": "Paper",
+                "title": row.get("title"),
+                "meta": " · ".join(
+                    filter(None, (row.get("pmid") and f"PMID {row['pmid']}", row.get("source")))
+                ),
+                "entity_id": row["id"],
+                "key": f"op-{row['id']}",
+                "view_kind": "paper",
+            }
+            for row in papers
+        ]
+    )
+
+
 def _pick_type(group_key: str, other_key: str) -> None:
     """Selecting in one pill group clears the other, so one type is inspected at a time."""
     if st.session_state.get(group_key):
@@ -1849,7 +2014,14 @@ page = _top_nav()
 st.session_state["db"] = st.session_state["db_select"]
 set_database(st.session_state["db"])
 
-_ENTITY_VIEWS = {"paper": page_paper, "gene": page_gene, "pathway": page_pathway, "trait": page_trait}
+_ENTITY_VIEWS = {
+    "paper": page_paper,
+    "gene": page_gene,
+    "pathway": page_pathway,
+    "trait": page_trait,
+    "compound": page_compound,
+    "organism": page_organism,
+}
 
 # Entity views live in session state (so navigation is same-tab and Back can restore
 # where you were); the URL only mirrors the view for sharing, and seeds it once when a
