@@ -29,7 +29,9 @@ from litgraph.db.context import set_database
 from litgraph.ingest.embeddings import embed_texts
 from litgraph.search.citations import get_citing_papers, get_references, most_cited
 from litgraph.search.compounds import get_compound, papers_mentioning_compound, pathways_producing
-from litgraph.search.entities import search_entities
+from litgraph.search.corpus import placeholder as corpus_placeholder
+from litgraph.search.corpus import suggestions as corpus_suggestions
+from litgraph.search.entities import search_entities, searchable_types
 from litgraph.search.genes import (
     co_mentioned_genes,
     get_gene,
@@ -90,6 +92,7 @@ _KIND_COLOR = {
     "Gene": "#6F7F1F",
     "Pathway": "#B2643A",
     "Trait": "#3F7370",
+    "Disease": "#9B4A4A",
     "Compound": "#7A5980",
     "Organism": "#A2812A",
     "Category": "#8C8279",
@@ -750,12 +753,12 @@ def page_home() -> None:
             "Semantic search",
             key="home_search",
             on_change=_home_search_go,
-            placeholder="Describe what you are looking for — e.g. how rice tolerates drought",
+            placeholder=corpus_placeholder(db),
             label_visibility="collapsed",
         )
         st.pills(
             "Suggestions",
-            _SUGGESTIONS,
+            _suggestions(db),
             key="home_sugg",
             on_change=_suggestion_picked,
             args=("home_sugg", True),
@@ -829,11 +832,19 @@ _SEARCH_MODES = {
     "Semantic": (semantic_search, "distance", "Finds papers that mean something similar, in whatever words."),
 }
 
-_ENTITY_LABELS = ("Gene", "Pathway", "Trait", "Compound", "Organism")
+@st.cache_data(ttl=600, show_spinner=False)
+def _entity_labels(db: str) -> dict[str, str]:
+    """Searchable types for this database, discovered from its schema."""
+    return searchable_types()
 
-# Deliberately spread across the entity types, so the first click teaches what the
-# graph holds. Tuned to the rice corpus; revisit when the bio reingest lands.
-_SUGGESTIONS = ("drought tolerance", "HD3A", "photoperiodism", "grain weight")
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _suggestions(db: str) -> tuple[str, ...]:
+    """Entry points drawn from this database, so switching corpora switches the chips."""
+    try:
+        return corpus_suggestions(db)
+    except Exception:
+        return ()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -845,8 +856,8 @@ def _search_papers(db: str, mode: str, query: str) -> list[dict]:
 def _search_entities(db: str, query: str) -> dict[str, list[dict]]:
     """Name matches per entity type, skipping types this database doesn't have."""
     found = {}
-    for label in _ENTITY_LABELS:
-        rows = search_entities(label, query, limit=5)
+    for label, key in sorted(_entity_labels(db).items()):
+        rows = search_entities(label, query, limit=5, key=key)
         if rows:
             found[label] = rows
     return found
@@ -943,7 +954,7 @@ def _papers_search() -> None:
         st.caption("Try")
         st.pills(
             "Suggestions",
-            _SUGGESTIONS,
+            _suggestions(db),
             key="search_sugg",
             on_change=_suggestion_picked,
             args=("search_sugg", False),
@@ -1110,10 +1121,15 @@ def _browser_behaviours() -> None:
         const enableDrag = () => {
             if (!new URLSearchParams(W.location.search).has("edit")) return;
             const hero = doc.querySelector("#lg-hero");
+            // Streamlit replaces the hero on every rerun, so the guard lives on the
+            // element: a fresh hero is always re-armed, and the same one is never
+            // wired twice. A stale panel from the previous hero is removed first.
             if (!hero || hero.dataset.dragReady) return;
             const marks = [...hero.querySelectorAll(".lg-node")];
             if (!marks.length) return;
             hero.dataset.dragReady = "1";
+            const stale = doc.getElementById("lg-anchor-panel");
+            if (stale) stale.remove();
 
             const css = doc.createElement("style");
             css.textContent = "#lg-hero .lg-node { pointer-events: all !important; cursor: grab; }";
@@ -1127,6 +1143,7 @@ def _browser_behaviours() -> None:
             }));
 
             const panel = doc.createElement("pre");
+            panel.id = "lg-anchor-panel";
             panel.style.cssText =
                 "position:fixed; left:14px; bottom:14px; z-index:99999; background:#1C1917;" +
                 "color:#B8D400; font:11px/1.5 ui-monospace,monospace; padding:12px 14px;" +
@@ -1146,8 +1163,11 @@ def _browser_behaviours() -> None:
                     rows.push('    "' + n + '": (' + f.fx.toFixed(3) + ", " + f.fy.toFixed(3) + "),");
                     packed.push(n + ":" + f.fx.toFixed(3) + "," + f.fy.toFixed(3));
                 });
-                panel.dataset.dict = "_BACKDROP_ANCHORS = {\n" + rows.join("\n") + "\n}";
-                panel.textContent = panel.dataset.dict + "\n\n(click to copy)";
+                // Escaped twice on purpose: this JS lives in a non-raw Python string,
+                // so a single backslash-n would reach the browser as a real newline
+                // and leave an unterminated string literal.
+                panel.dataset.dict = "_BACKDROP_ANCHORS = {\\n" + rows.join("\\n") + "\\n}";
+                panel.textContent = panel.dataset.dict + "\\n\\n(click to copy)";
                 hero.querySelectorAll("line[data-src]").forEach((l) => {
                     const a = frac.get(l.dataset.src), b = frac.get(l.dataset.dst);
                     if (!a || !b) return;
