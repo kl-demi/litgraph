@@ -37,7 +37,9 @@ EXTRACTION_CHECKED = NodeType(
 
 PATHWAY = NodeType("Pathway", key="pathway_id", props=(Prop("name"), Prop("source_db")))
 
-MENTIONS        = EdgeType("MENTIONS", src="Paper", dst="Gene", props=(Prop("source"),))
+MENTIONS        = EdgeType(
+    "MENTIONS", src="Paper", dst=("Organism", "Gene", "Compound", "Disease"), props=(Prop("source"),)
+)
 IS_A            = EdgeType("IS_A", src="Disease", dst="Disease")
 PARTICIPATES_IN = EdgeType("PARTICIPATES_IN", src="Gene", dst="Pathway", props=(Prop("evidence_code"),))
 PRODUCES        = EdgeType("PRODUCES", src="Pathway", dst="Compound", props=(Prop("evidence_code"),))

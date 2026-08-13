@@ -71,13 +71,15 @@ class NodeType:
 class EdgeType:
     """An edge type and the node types it connects.
 
-    ``src``/``dst`` let `upsert_edges`-style generic writers know which key to 
-    match each end on (docs/architecture.md §3).
+    ``src``/``dst`` let `upsert_edges`-style generic writers know which key to
+    match each end on (docs/architecture.md §3). An endpoint that fans out to more than
+    one node type (e.g. MENTIONS) declares a tuple; `upsert_edges` then requires the
+    caller to disambiguate with an explicit `src=`/`dst=` override.
     """
 
     name: str
-    src: str
-    dst: str
+    src: str | tuple[str, ...]
+    dst: str | tuple[str, ...]
     props: tuple[Prop, ...] = ()
 
 
@@ -113,9 +115,11 @@ class Registry:
         otherwise surface later as a write that silently matches nothing.
         """
         for edge in self.edges.values():
-            for endpoint in (edge.src, edge.dst):
-                if endpoint not in self.nodes:
-                    raise ValueError(f"edge {edge.name} references unregistered node type {endpoint}")
+            for declared in (edge.src, edge.dst):
+                targets = declared if isinstance(declared, tuple) else (declared,)
+                for endpoint in targets:
+                    if endpoint not in self.nodes:
+                        raise ValueError(f"edge {edge.name} references unregistered node type {endpoint}")
 
 
 # The process-wide registry, populated by `litgraph.db.schema` at import time.

@@ -62,6 +62,17 @@ def test_edge_to_an_unregistered_node_type_raises():
         reg.validate()
 
 
+def test_a_multi_typed_endpoint_validates_every_declared_type():
+    reg = Registry()
+    reg.register(
+        NodeType("Thing", key="id"),
+        NodeType("Tag", key="code"),
+        EdgeType("TAGGED", src="Thing", dst=("Tag", "Nonexistent")),
+    )
+    with pytest.raises(ValueError, match="unregistered node type Nonexistent"):
+        reg.validate()
+
+
 @pytest.mark.parametrize("emit", [arcadedb_ddl, neo4j_ddl])
 def test_both_emitters_validate_before_emitting(emit):
     reg = Registry()

@@ -19,10 +19,11 @@ from datetime import datetime
 from litgraph.db.neo4j_client import run_write
 from litgraph.graph.writer import CreateMissing, upsert_edges, upsert_nodes
 from spokebio.models import DiseaseIsA, DiseaseXref, EntityMention, ParticipatesIn, Pathway, Produces
+from spokebio.schema_ext import MENTIONS
 
-# The MENTIONS destination type per EntityMention.vertex_type. MENTIONS is registered
-# Paper -> Gene, and the others are passed as a `dst` override.
-_MENTION_TARGETS = ("Organism", "Gene", "Compound", "Disease")
+# The MENTIONS destination types, per EntityMention.vertex_type -- each written with an
+# explicit `dst` override (see EdgeType.dst's docstring).
+_MENTION_TARGETS = MENTIONS.dst
 _KEY_PROP = {
     "Organism": "taxon_id",
     "Gene": "gene_id",

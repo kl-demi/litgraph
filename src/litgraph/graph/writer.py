@@ -25,6 +25,15 @@ SRC = "src"
 DST = "dst"
 
 
+def _single(declared: str | tuple[str, ...], edge_name: str, side: str) -> str:
+    """The endpoint's node type, or raise if it's multi-typed and needs an override."""
+    if isinstance(declared, tuple):
+        raise ValueError(
+            f"{edge_name} declares multiple {side} types ({', '.join(declared)}); pass {side}= explicitly"
+        )
+    return declared
+
+
 class CreateMissing(StrEnum):
     """Which absent edge endpoints get a key-only INSERT; rows with other absent
     endpoints are dropped. Existing nodes are matched and left untouched either way.
@@ -80,22 +89,24 @@ def upsert_edges(
             properties. Fixed names, so a self-edge (CITES: Paper->Paper) doesn't collide.
         create_missing: Which absent endpoints get a key-only insert.
         update_existing: Rewrite edge properties on match.
-        src: Override the registered source node type.
-        dst: Override the registered destination node type (MENTIONS is registered
-            Paper->Gene but is also written to Compound and Organism).
+        src: Override the registered source node type. Required if the edge declares
+            more than one source type (see EdgeType.src).
+        dst: Override the registered destination node type. Required if the edge
+            declares more than one destination type (see EdgeType.dst) -- MENTIONS,
+            for instance, is declared against Gene/Compound/Organism/Disease.
 
     Returns:
         int: Count of newly created edges.
 
     Raises:
         ValueError: If `create_missing` targets an endpoint whose NodeType is not
-            declared `bootstrappable`.
+            declared `bootstrappable`, or if a multi-typed endpoint has no override.
     """
     if not rows:
         return 0
     edge = registry.edges[edge_type]
-    src_node = registry.node(src or edge.src)
-    dst_node = registry.node(dst or edge.dst)
+    src_node = registry.node(src or _single(edge.src, edge.name, "src"))
+    dst_node = registry.node(dst or _single(edge.dst, edge.name, "dst"))
     for endpoint, node in ((SRC, src_node), (DST, dst_node)):
         if create_missing.creates(endpoint) and not node.bootstrappable:
             raise ValueError(f"{edge.name} cannot bootstrap {node.name}: not declared bootstrappable")

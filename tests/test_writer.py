@@ -49,6 +49,17 @@ def test_unregistered_type_raises(arcadedb):
         upsert_nodes("Nonexistent", [{"id": "x"}], update_existing=True)
 
 
+def test_a_multi_typed_endpoint_without_an_override_raises(arcadedb):
+    """MENTIONS declares four destination types, so the caller must pick one."""
+    with pytest.raises(ValueError, match="MENTIONS declares multiple dst types"):
+        upsert_edges(
+            "MENTIONS",
+            [{"src": "pmid:1", "dst": "ncbigene:1", "source": "pubtator3"}],
+            create_missing=CreateMissing.NONE,
+            update_existing=False,
+        )
+
+
 def test_only_registered_properties_present_in_rows_are_written(arcadedb):
     """An optional property the rows omit must not be written as null."""
     upsert_nodes("Pathway", [{"pathway_id": "GO:1", "name": "Apoptosis"}], update_existing=True)
@@ -193,6 +204,7 @@ def test_update_existing_false_never_restamps_an_edge(arcadedb):
         [{"src": "pmid:1", "dst": "ncbigene:1", "source": "pubtator3"}],
         create_missing=CreateMissing.NONE,
         update_existing=False,
+        dst="Gene",
     )
     sql = _sql(arcadedb)
     assert "SET source = $r.source" in sql

@@ -245,10 +245,10 @@ def edge_endpoints() -> dict[str, list[list[str]]]:
 def rebuild_edge_endpoints() -> dict[str, list[list[str]]]:
     """Rescan every registered edge type's endpoints onto the GraphStats singleton.
 
-    Measured rather than read off the registry, which records only what a loader
-    declared: MENTIONS is registered Paper -> Gene but also reaches Compound, Organism
-    and Disease. The type list comes from the database too, so an edge type written by
-    a loader that was never imported here is still covered.
+    Measured rather than read off the registry, which records only what could be
+    written, not what actually was: an edge type's declared endpoints (e.g. MENTIONS'
+    four) may not all appear in a given database. The type list comes from the database
+    too, so an edge type written by a loader that was never imported here is still covered.
     """
     found = {name: _scan_edge_endpoints(name) for name in _edge_type_names()}
     run_write(_SAVE_EDGE_ENDPOINTS, edge_endpoints=json.dumps(found))
