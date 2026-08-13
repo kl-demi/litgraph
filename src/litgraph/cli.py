@@ -17,6 +17,7 @@ from litgraph.ingest.pipeline import (
     run_daily_fetch_pubmed,
     run_enrichment,
 )
+from spokebio.cli import app as bio_app
 
 
 app = typer.Typer(help="Academic paper ingestion & search backed by ArcadeDB (or Neo4j, see README).")
@@ -24,6 +25,7 @@ search_app = typer.Typer(help="Query the graph.")
 app.add_typer(search_app, name="search")
 stats_app = typer.Typer(help="Inspect what's in the graph.")
 app.add_typer(stats_app, name="stats")
+app.add_typer(bio_app, name="bio")
 
 console = Console()
 
