@@ -49,3 +49,11 @@ class Produces(BaseModel):
     pathway_id: str  # bare native id, e.g. "R-HSA-111448"
     compound_id: str  # namespaced, e.g. "mesh:D009569" -- matches the existing Compound.compound_id key
     evidence_code: str  # e.g. "TAS", "IEA"
+
+
+class PathwayGoMapping(BaseModel):
+    """One Reactome Pathway -> GO Pathway correspondence for the same concept."""
+
+    reactome_pathway_id: str  # e.g. "R-HSA-73843"
+    go_pathway_id: str  # e.g. "GO:0006015" -- dropped at write time if outside GO's
+    # biological_process branch, since only that branch gets a Pathway node (see ingest/go.py)

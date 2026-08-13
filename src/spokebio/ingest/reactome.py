@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from spokebio.ingest._download import ensure_cached_file
-from spokebio.models import ParticipatesIn, Pathway, Produces
+from spokebio.models import ParticipatesIn, Pathway, PathwayGoMapping, Produces
 
 REACTOME_BASE_URL = "https://reactome.org/download/current"
 DEFAULT_REACTOME_DIR = "data/reactome"
@@ -123,3 +123,25 @@ def extract_produces(path: str | Path, crosswalk: dict[str, str]) -> ProducesExt
         dropped_unresolved=dropped_unresolved,
         dropped_duplicate=dropped_duplicate,
     )
+
+
+def extract_pathway_go_mappings(path: str | Path) -> list[PathwayGoMapping]:
+    """Parse Pathways2GoTerms_human.txt (Identifier, Name, GO_Term) into Reactome
+    Pathway -> GO Pathway correspondences.
+
+    Unlike Reactome's other flat files, this one carries a header row. It's otherwise
+    clean: one row per Reactome pathway id, no duplicate (Reactome id, GO id) pairs
+    (confirmed live), so no dedup pass is needed. A GO id can be the target of several
+    Reactome pathways (118 of 1,018 rows, confirmed live) -- that's expected fan-in, not
+    a conflict to resolve.
+    """
+    mappings = []
+    with open(path, encoding="utf-8") as f:
+        next(f, None)  # header: Identifier, Name, GO_Term
+        for line in f:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 3:
+                continue
+            reactome_pathway_id, _name, go_pathway_id = fields
+            mappings.append(PathwayGoMapping(reactome_pathway_id=reactome_pathway_id, go_pathway_id=go_pathway_id))
+    return mappings

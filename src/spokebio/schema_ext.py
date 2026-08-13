@@ -43,6 +43,7 @@ MENTIONS        = EdgeType(
 IS_A            = EdgeType("IS_A", src="Disease", dst="Disease")
 PARTICIPATES_IN = EdgeType("PARTICIPATES_IN", src="Gene", dst="Pathway", props=(Prop("evidence_code"),))
 PRODUCES        = EdgeType("PRODUCES", src="Pathway", dst="Compound", props=(Prop("evidence_code"),))
+MAPS_TO         = EdgeType("MAPS_TO", src="Pathway", dst="Pathway")
 
 register(
     ORGANISM,
@@ -55,4 +56,5 @@ register(
     IS_A,
     PARTICIPATES_IN,
     PRODUCES,
+    MAPS_TO,
 )

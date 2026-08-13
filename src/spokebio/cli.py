@@ -44,14 +44,16 @@ def reactome_pathways(
         DEFAULT_MESH_YEAR, "--mesh-year", help="MeSH publishes no stable 'current' URL -- bump if the default goes stale"
     ),
 ) -> None:
-    """Ingest Reactome's human pathways, gene participation, and compound production."""
+    """Ingest Reactome's human pathways, gene participation, compound production, and
+    GO pathway correspondences."""
     ensure_schema()
     totals = run_reactome_ingest(batch_size=batch_size, force_download=force_download, mesh_year=mesh_year)
     console.print(
         f"[green]Processed {totals['pathways_processed']} pathways (+{totals['new_pathways']} new), "
         f"{totals['edges_processed']} gene-pathway pairs (+{totals['new_participates_in_edges']} new "
         f"PARTICIPATES_IN edges), {totals['produces_processed']} pathway-compound pairs "
-        f"(+{totals['new_produces_edges']} new PRODUCES edges).[/green]"
+        f"(+{totals['new_produces_edges']} new PRODUCES edges), {totals['go_mappings_processed']} "
+        f"Reactome-GO pathway correspondences (+{totals['new_maps_to_edges']} new MAPS_TO edges).[/green]"
     )
 
 
@@ -99,7 +101,8 @@ _TOTALS_LINE = {
         f"Processed {t['pathways_processed']} pathways (+{t['new_pathways']} new), "
         f"{t['edges_processed']} gene-pathway pairs (+{t['new_participates_in_edges']} new PARTICIPATES_IN "
         f"edges), {t['produces_processed']} pathway-compound pairs (+{t['new_produces_edges']} new "
-        f"PRODUCES edges)."
+        f"PRODUCES edges), {t['go_mappings_processed']} Reactome-GO pathway correspondences "
+        f"(+{t['new_maps_to_edges']} new MAPS_TO edges)."
     ),
     "disease_ontology": lambda t: (
         f"Processed {t['xrefs_processed']} MeSH-mapped DO terms (+{t['new_diseases']} new Disease nodes), "

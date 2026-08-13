@@ -22,13 +22,15 @@ from spokebio.ingest.reactome import (
     ensure_reactome_file,
     extract_human_pathways,
     extract_participates_in,
+    extract_pathway_go_mappings,
     extract_produces,
 )
-from spokebio.models import DiseaseIsA, DiseaseXref, ParticipatesIn, Pathway, Produces
+from spokebio.models import DiseaseIsA, DiseaseXref, ParticipatesIn, Pathway, PathwayGoMapping, Produces
 from spokebio.upsert import (
     upsert_disease_is_a,
     upsert_disease_xrefs,
     upsert_participates_in,
+    upsert_pathway_go_mappings,
     upsert_pathways,
     upsert_produces,
 )
@@ -149,10 +151,13 @@ def run_reactome_ingest(
     """Ingest Reactome's human pathways (ReactomePathways.txt) as Pathway nodes;
     NCBI Gene -> Pathway associations (NCBI2Reactome.txt, the base file -- not
     _All_Levels, see docs/spoke_schema.md's open-decision note on that tradeoff) as
-    PARTICIPATES_IN edges; and ChEBI2Reactome.txt's Pathway -> Compound associations as
+    PARTICIPATES_IN edges; ChEBI2Reactome.txt's Pathway -> Compound associations as
     PRODUCES edges, resolved through the ChEBI<->MeSH crosswalk (see
     ingest/chebi_mesh_crosswalk.py -- only ~33.7% of referenced ChEBI ids resolve;
-    unresolved ones are dropped and counted, see ``dropped_unresolved`` below).
+    unresolved ones are dropped and counted, see ``dropped_unresolved`` below); and
+    Pathways2GoTerms_human.txt's Reactome Pathway -> GO Pathway correspondences as
+    MAPS_TO edges (silently dropped where `run_go_ingest` hasn't created the GO side --
+    order-independent since a later re-run of either picks up the rest).
 
     Unlike the GO/PubTator pieces, this creates Gene/Compound nodes on demand (see
     upsert.py's docstrings) -- most of Reactome's human genes/compounds won't already
@@ -161,6 +166,7 @@ def run_reactome_ingest(
     pathways_path = ensure_reactome_file("ReactomePathways.txt", force=force_download)
     edges_path = ensure_reactome_file("NCBI2Reactome.txt", force=force_download)
     chebi_edges_path = ensure_reactome_file("ChEBI2Reactome.txt", force=force_download)
+    go_mapping_path = ensure_reactome_file("Pathways2GoTerms_human.txt", force=force_download)
 
     totals = {
         "pathways_processed": 0,
@@ -172,6 +178,8 @@ def run_reactome_ingest(
         "new_produces_edges": 0,
         "dropped_unresolved_produces": 0,
         "dropped_duplicate_produces": 0,
+        "go_mappings_processed": 0,
+        "new_maps_to_edges": 0,
     }
 
     with _progress() as progress:
@@ -250,5 +258,27 @@ def run_reactome_ingest(
         f"{produces_extraction.dropped_duplicate} duplicate pairs collapsed by evidence rank; "
         f"processed {totals['produces_processed']} distinct pairs, "
         f"+{totals['new_produces_edges']} new PRODUCES edges"
+    )
+
+    go_mappings = extract_pathway_go_mappings(go_mapping_path)
+    with _progress() as progress:
+        task = progress.add_task("Writing MAPS_TO edges", total=len(go_mappings))
+        mapping_batch: list[PathwayGoMapping] = []
+        for mapping in go_mappings:
+            mapping_batch.append(mapping)
+            if len(mapping_batch) >= batch_size:
+                totals["new_maps_to_edges"] += upsert_pathway_go_mappings(mapping_batch)
+                totals["go_mappings_processed"] += len(mapping_batch)
+                progress.update(task, advance=len(mapping_batch))
+                mapping_batch = []
+        if mapping_batch:
+            totals["new_maps_to_edges"] += upsert_pathway_go_mappings(mapping_batch)
+            totals["go_mappings_processed"] += len(mapping_batch)
+            progress.update(task, advance=len(mapping_batch))
+
+    console.log(
+        f"reactome-maps-to: processed {totals['go_mappings_processed']} Reactome-GO pathway "
+        f"correspondences, +{totals['new_maps_to_edges']} new MAPS_TO edges (rows whose GO side "
+        f"isn't a biological_process Pathway node yet are silently skipped)"
     )
     return totals

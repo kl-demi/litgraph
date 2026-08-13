@@ -34,9 +34,10 @@ Confirmed overlap with litgraph today: **Gene Ontology**, **Reactome**, **MeSH**
 
 | Source | Yields | Native key |
 |---|---|---|
-| PubTator3 | `Organism`/`Gene`/`Compound` nodes + `MENTIONS` edges from `Paper` | species-agnostic entity extraction from paper text |
+| PubTator3 | `Organism`/`Gene`/`Compound`/`Disease` nodes + `MENTIONS` edges from `Paper` | species-agnostic entity extraction from paper text |
 | GO (`biological_process` branch) | `Pathway` nodes | `GO:` verbatim |
-| Reactome (human only) | `Pathway` nodes, `PARTICIPATES_IN`, `PRODUCES` | `R-HSA-` verbatim; genes `ncbigene:`; compounds via crosswalk |
+| Reactome (human only) | `Pathway` nodes, `PARTICIPATES_IN`, `PRODUCES`, `MAPS_TO` (to GO `Pathway`) | `R-HSA-` verbatim; genes `ncbigene:`; compounds via crosswalk |
+| Disease Ontology (`doid.obo`) | `Disease.doid` + `IS_A` hierarchy, over MeSH-keyed `Disease` nodes | `DOID:` rides as a property; key stays `mesh:` |
 | NCBI `gene_info` | LocusTag -> `ncbigene:` crosswalk substrate | — |
 | ChEBI + MeSH + Biomappings | ChEBI -> MeSH compound crosswalk (33.7% coverage) | — |
 
@@ -48,8 +49,9 @@ partly used:
 | `ReactomePathways.txt` | `Pathway` nodes (human only) |
 | `NCBI2Reactome.txt` | `PARTICIPATES_IN` |
 | `ChEBI2Reactome.txt` | `PRODUCES`, via the ChEBI<->MeSH crosswalk |
-| `Pathways2GoTerms_human.txt` | unused — would bridge a Reactome `Pathway` to the GO `Pathway` for the same concept |
-| `Reactome2OMIM.txt`, `HumanDiseasePathways.txt` | unused — human disease linkage |
+| `Pathways2GoTerms_human.txt` | `MAPS_TO` (Reactome `Pathway` -> GO `Pathway`, same concept) |
+| `Reactome2OMIM.txt` | **not a disease file despite the name** — confirmed live (2026-08-13): its header is `ACC, PathwayId, Pathway` and `ACC` values are UniProt accessions (e.g. `O00159-3`), not OMIM ids. It's a protein->pathway mapping, redundant with `NCBI2Reactome.txt`-derived `PARTICIPATES_IN`. Carries no disease identifier at all. |
+| `HumanDiseasePathways.txt` | unused — just a `(pathway_id, name)` list flagging which existing `Pathway` nodes fall under Reactome's "Disease" top-level category; it does not link to a `Disease` node |
 
 litgraph's entity extraction (PubTator3 mining paper text) has no SPOKE analog — SPOKE
 is built entirely from curated/measured sources, not text mining.
@@ -58,9 +60,16 @@ is built entirely from curated/measured sources, not text mining.
 
 In rough order of what unlocks the most:
 
-- **Disease.** No disease node or disease linkage at all today. Cheapest first step:
-  the two unused Reactome files above, before reaching for a new source. Real next
-  source: DisGeNET (gene/variant -> disease) or OMIM.
+- **Disease linkage.** The `Disease` node exists (MeSH-keyed, DOID + `IS_A` hierarchy
+  from Disease Ontology, `MENTIONS` from PubTator3), but nothing connects it to
+  `Pathway`/`Gene`/`Compound` beyond co-mention. Reactome's own files don't help here
+  (see the table above) — `doid.obo` also carries zero `OMIM:` xrefs (confirmed live),
+  so there's no free OMIM->MeSH bridge sitting in data already fetched. The real path
+  is OMIM's `mim2gene.txt` (free) joined to existing `PARTICIPATES_IN`/`Gene` data,
+  but landing that on a MeSH-keyed `Disease` node needs an OMIM->MeSH crosswalk —
+  realistically a UMLS Metathesaurus license (free for research, but a registration
+  step, not a drop-in download like the ChEBI<->MeSH crosswalk). DisGeNET is the other
+  candidate, gene/variant -> disease, same crosswalk problem.
 - **Drug / PharmacologicClass.** litgraph's `Compound` is MeSH-keyed and chemical-only
   — no notion of an approved drug, dose, or drug class. Candidate sources: DrugCentral
   (approved drugs + indications) or DrugBank.

@@ -6,6 +6,8 @@ Exports:
         projected onto MeSH-keyed Disease nodes.
     upsert_participates_in / upsert_produces: annotation edges (bootstrap the entity
         endpoint, require the ontology one).
+    upsert_pathway_go_mappings: Reactome Pathway <-> GO Pathway correspondences (neither
+        endpoint bootstrapped).
     upsert_mentions: Paper->entity MENTIONS edges plus the entity nodes themselves.
     mark_papers_checked: per-extractor ExtractionChecked bookkeeping nodes.
     backfill_gene_names: Gene display-name maintenance.
@@ -18,7 +20,15 @@ from datetime import datetime
 
 from litgraph.db.neo4j_client import run_write
 from litgraph.graph.writer import CreateMissing, upsert_edges, upsert_nodes
-from spokebio.models import DiseaseIsA, DiseaseXref, EntityMention, ParticipatesIn, Pathway, Produces
+from spokebio.models import (
+    DiseaseIsA,
+    DiseaseXref,
+    EntityMention,
+    ParticipatesIn,
+    Pathway,
+    PathwayGoMapping,
+    Produces,
+)
 from spokebio.schema_ext import MENTIONS
 
 # The MENTIONS destination types, per EntityMention.vertex_type -- each written with an
@@ -106,6 +116,21 @@ def upsert_produces(edges: list[Produces]) -> int:
     """
     rows = [{"src": e.pathway_id, "dst": e.compound_id, "evidence_code": e.evidence_code} for e in edges]
     return upsert_edges("PRODUCES", rows, create_missing=CreateMissing.DST, update_existing=True)
+
+
+def upsert_pathway_go_mappings(mappings: list[PathwayGoMapping]) -> int:
+    """Upsert Reactome Pathway -> GO Pathway MAPS_TO edges.
+
+    Neither endpoint is bootstrapped: a row is silently dropped if either
+    `run_reactome_ingest` or `run_go_ingest` hasn't yet created its Pathway node (the
+    GO side is also dropped outright when the GO id falls outside the biological_process
+    branch, which never gets a Pathway node -- see ingest/go.py).
+
+    Returns:
+        int: How many edges were newly created.
+    """
+    rows = [{"src": m.reactome_pathway_id, "dst": m.go_pathway_id} for m in mappings]
+    return upsert_edges("MAPS_TO", rows, create_missing=CreateMissing.NONE, update_existing=False)
 
 
 def upsert_mentions(paper_mentions: dict[str, list[EntityMention]], source: str) -> dict[str, int]:

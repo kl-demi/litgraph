@@ -3,11 +3,12 @@ from spokebio.ingest.reactome import (
     ensure_reactome_file,
     extract_human_pathways,
     extract_participates_in,
+    extract_pathway_go_mappings,
     extract_produces,
 )
 from litgraph.graph.writer import CreateMissing
-from spokebio.models import ParticipatesIn, Pathway, Produces
-from spokebio.upsert import upsert_participates_in, upsert_pathways, upsert_produces
+from spokebio.models import ParticipatesIn, Pathway, PathwayGoMapping, Produces
+from spokebio.upsert import upsert_participates_in, upsert_pathway_go_mappings, upsert_pathways, upsert_produces
 
 _PATHWAYS_FIXTURE = (
     "R-HSA-164843\t2-LTR circle formation\tHomo sapiens\n"
@@ -156,6 +157,59 @@ def test_upsert_produces_writes_params(mocker):
 def test_upsert_produces_noop_on_empty(mocker):
     mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=0)
     assert upsert_produces([]) == 0
+    assert mock_edges.call_args.args[1] == []
+
+
+# Unlike Reactome's other flat files, this one has a header row; a GO id can be the
+# target of more than one Reactome pathway (GO:0006892 here), which is fan-in, not a
+# duplicate pair to collapse.
+_GO_MAPPING_FIXTURE = (
+    "Identifier\tName\tGO_Term\n"
+    "R-HSA-73843\t5-Phosphoribose 1-diphosphate biosynthesis\tGO:0006015\n"
+    "R-HSA-382556\tABC-family protein mediated transport\tGO:0055085\n"
+    "R-HSA-199991\tMembrane Trafficking\tGO:0006892\n"
+    "R-HSA-199992\ttrans-Golgi Network Vesicle Budding\tGO:0006892\n"
+)
+
+
+def test_extract_pathway_go_mappings_skips_the_header_row(tmp_path):
+    path = tmp_path / "Pathways2GoTerms_human.txt"
+    path.write_text(_GO_MAPPING_FIXTURE)
+
+    mappings = extract_pathway_go_mappings(path)
+
+    assert PathwayGoMapping(reactome_pathway_id="Identifier", go_pathway_id="GO_Term") not in mappings
+    assert len(mappings) == 4
+
+
+def test_extract_pathway_go_mappings_allows_one_go_id_to_have_several_pathways(tmp_path):
+    path = tmp_path / "Pathways2GoTerms_human.txt"
+    path.write_text(_GO_MAPPING_FIXTURE)
+
+    mappings = extract_pathway_go_mappings(path)
+
+    fan_in = [m for m in mappings if m.go_pathway_id == "GO:0006892"]
+    assert {m.reactome_pathway_id for m in fan_in} == {"R-HSA-199991", "R-HSA-199992"}
+
+
+def test_upsert_pathway_go_mappings_writes_params(mocker):
+    """Neither endpoint bootstraps -- both Pathway nodes must already exist."""
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=1)
+
+    new_count = upsert_pathway_go_mappings(
+        [PathwayGoMapping(reactome_pathway_id="R-HSA-73843", go_pathway_id="GO:0006015")]
+    )
+
+    assert new_count == 1
+    edge_type, rows = mock_edges.call_args.args
+    assert edge_type == "MAPS_TO"
+    assert rows[0] == {"src": "R-HSA-73843", "dst": "GO:0006015"}
+    assert mock_edges.call_args.kwargs["create_missing"] is CreateMissing.NONE
+
+
+def test_upsert_pathway_go_mappings_noop_on_empty(mocker):
+    mock_edges = mocker.patch("spokebio.upsert.upsert_edges", return_value=0)
+    assert upsert_pathway_go_mappings([]) == 0
     assert mock_edges.call_args.args[1] == []
 
 
