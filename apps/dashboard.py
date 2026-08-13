@@ -46,7 +46,13 @@ from litgraph.search.papers import authors_of, categories_of, genes_in, get_pape
 from litgraph.search.pathways import compounds_produced, genes_in_pathway, get_pathway, papers_for_pathway
 from litgraph.search.traits import genes_for_trait, get_trait, papers_for_trait
 from litgraph.search.semantic import semantic_search
-from litgraph.search.stats import latest_papers, overview, top_authors, type_counts
+from litgraph.search.stats import (
+    edge_endpoints,
+    latest_papers,
+    overview,
+    top_authors,
+    type_counts,
+)
 
 st.set_page_config(page_title="LitGraph", page_icon="📚", layout="wide", initial_sidebar_state="collapsed")
 
@@ -161,6 +167,14 @@ st.markdown(
     }
     [class*="st-key-dbadv-"] button { color: #8C8279 !important; }
     [class*="st-key-dbadv-"] button:hover { color: #57534E !important; }
+    /* The wordmark is a button so it can reset navigation without reloading the page,
+       but it has to read as the wordmark rather than as a control. */
+    [class*="st-key-wordmark"] div[data-testid="stButton"] button[kind="tertiary"]
+    div[data-testid="stMarkdownContainer"] p {
+        font-family: "Bricolage Grotesque", sans-serif !important;
+        font-size: 1.5rem !important; font-weight: 700 !important; line-height: 1.2 !important;
+    }
+    [class*="st-key-wordmark"] button p::after { content: "."; color: #B8D400; }
 
     /* Landing backdrop. Nodes are percentage-positioned HTML so they stay circular and
        track the container the same way the copy and the search bar do; only the edges
@@ -832,7 +846,6 @@ def page_home() -> None:
         _figure("Nodes", node_rows, "#6F7F1F")
     with col2:
         _figure("Edges", edge_rows, "#B2643A")
-    st.caption("Ingestion bookkeeping types are not shown; the Database page lists every type.")
 
     data = _overview(db)
     full, stubs = data["papers"], data["stubs"]
@@ -1975,11 +1988,10 @@ def page_organism(taxon_id: str) -> None:
 # nothing, so an unfamiliar corpus is still readable.
 _TYPE_NOTES = {
     # Core paper graph
-    "Paper": "A publication ingested from arXiv, PubMed or Kaggle. Stubs are title-only "
-             "placeholders created by someone else's citation.",
-    "Author": "One author. Keyed on the name itself, so two researchers sharing a name "
-              "collapse into a single node.",
-    "Category": "A subject term a paper is filed under — arXiv categories and MeSH descriptors.",
+    "Paper": "A research paper published on arXiv or PubMed. Some are title-only stubs "
+             "as they are cited by others but yet to be ingested.",
+    "Author": "An author of a research paper.",
+    "Category": "A subject term that a paper is filed under, eg. arXiv categories and MeSH descriptors.",
     # Biology
     "Gene": "A gene, keyed on its NCBI Entrez id.",
     "Compound": "A chemical, keyed on its MeSH descriptor.",
@@ -1988,49 +2000,30 @@ _TYPE_NOTES = {
                "its DOID and its place in the hierarchy.",
     "Pathway": "A biological process, from Gene Ontology or Reactome.",
     "Trait": "A measurable phenotype, from Oryzabase. Rice corpus only.",
-    # Edges
-    "CITES": "One paper citing another.",
-    "AUTHORED": "An author to a paper they wrote.",
-    "IN_CATEGORY": "A paper to a subject term it is filed under.",
-    "MENTIONS": "An entity named in a paper's title or abstract, found by an extractor. "
-                "Evidence that the two were discussed together, not that they interact.",
-    "PARTICIPATES_IN": "A gene taking part in a pathway. Asserted by an ontology, not drawn "
-                       "from the literature in this graph.",
-    "PRODUCES": "A pathway to a compound it produces.",
-    "ASSOCIATED_WITH": "A gene linked to a phenotype, from Oryzabase.",
-    "IS_A": "A disease that is a subtype of another, projected from the Disease Ontology "
-            "hierarchy onto MeSH-keyed nodes.",
+    # Edges carry no note: the endpoints on the card say what they join.
     # Bookkeeping
-    "GraphStats": "Bookkeeping: one row of cached counters, so the overview never has to "
-                  "scan the graph.",
+    "GraphStats": "Bookkeeping: cached counters of things in the graph, such that overview doesn't "
+                  "have to do a full scan every time.",
     "IngestState": "Bookkeeping: ingestion checkpoints, so a scheduled run resumes where the "
                    "last one stopped.",
-    "PubtatorChecked": "Bookkeeping: which papers PubTator has already been asked about, so a "
-                       "re-run doesn't refetch them.",
+    "PubtatorChecked": "Bookkeeping: which papers PubTator has already processed to extract "
+                       " entities, so a re-run doesn't refetch them.",
     "ExtractionChecked": "Bookkeeping: which papers each extractor has already examined, so a "
                          "second extractor sees the corpus as unchecked.",
 }
 _VERTEX_FALLBACK = "No description recorded for this type yet."
-_EDGE_FALLBACK = "No description recorded for this edge type yet."
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _edge_endpoints(db: str) -> dict[str, list[str]]:
-    """Which node types each edge type actually joins, sampled from the data.
+def _edge_endpoints(db: str) -> dict[str, list[list[str]]]:
+    """Node-type pairs per edge type, read off the GraphStats singleton.
 
-    Measured rather than read off the registry: MENTIONS is declared Paper -> Gene but
-    also reaches Compound, Organism and Disease, and only the data shows that.
+    Recorded by `litgraph stats endpoints` rather than measured here: measuring costs a
+    full scan of the edge type -- 6.4s for human's largest -- while the shape only
+    changes when a loader starts writing a new kind of edge.
     """
-    try:
-        _, edges, _ = _schema_graph(db)
-    except httpx.HTTPError:
-        return {}
-    found: dict[str, list[str]] = {}
-    for src, dst, rel in edges:
-        pair = f"{src} → {dst}"
-        if pair not in found.setdefault(rel, []):
-            found[rel].append(pair)
-    return {rel: sorted(pairs) for rel, pairs in found.items()}
+    set_database(db)
+    return edge_endpoints()
 
 
 def _pick_type(group_key: str, *other_keys: str) -> None:
@@ -2113,35 +2106,39 @@ def page_database() -> None:
     with st.container(border=True):
         color = _KIND_COLOR.get(chosen["name"], _DEFAULT_KIND_COLOR)
         st.markdown(
-            f'<span style="display:inline-block; background:{color}; color:#FBF9F5; '
+            '<div style="display:flex; align-items:baseline; justify-content:space-between; '
+            'gap:1rem; margin-bottom:0.9rem">'
+            f'<div><span style="display:inline-block; background:{color}; color:#FBF9F5; '
             f'font-size:0.72rem; font-weight:600; letter-spacing:.07em; text-transform:uppercase; '
             f'padding:2px 8px; border-radius:3px">{chosen["type"]}</span>'
             f'&nbsp;&nbsp;<span style="font-family:\'Bricolage Grotesque\'; font-weight:600; '
-            f'font-size:1.35rem">{chosen["name"]}</span>',
+            f'font-size:1.35rem">{chosen["name"]}</span></div>'
+            f'<span style="color:#8C8279; font-size:0.82rem; white-space:nowrap">'
+            f'{chosen.get("records", 0):,} records</span>'
+            "</div>",
             unsafe_allow_html=True,
         )
-        bits = [f"{chosen.get('records', 0):,} records"]
         if chosen.get("parentTypes"):
-            bits.append(f"extends {', '.join(chosen['parentTypes'])}")
-        st.caption(" · ".join(bits))
+            st.caption(f"extends {', '.join(chosen['parentTypes'])}")
 
-        is_edge = chosen["type"] == "edge"
-        st.write(
-            _TYPE_NOTES.get(chosen["name"], _EDGE_FALLBACK if is_edge else _VERTEX_FALLBACK)
-        )
-        if is_edge:
-            pairs = _edge_endpoints(db).get(chosen["name"], [])
-            if pairs:
-                st.markdown(
-                    "**Connects** &nbsp;"
-                    + " &nbsp;·&nbsp; ".join(f"`{pair}`" for pair in pairs),
-                    unsafe_allow_html=True,
-                )
-                st.caption("Endpoints sampled from 200 edges of this type.")
-            elif chosen.get("records"):
-                st.caption("Endpoints could not be sampled for this edge type.")
-            else:
+        # An edge is described by what it joins, so the endpoints stand in for a note.
+        if chosen["type"] == "edge":
+            pairs = _edge_endpoints(db).get(chosen["name"])
+            if not chosen.get("records"):
                 st.caption("No edges of this type in this database, so it connects nothing yet.")
+            elif not pairs:
+                st.caption("Endpoints have not been recorded for this database yet.")
+            else:
+                joined = " &nbsp;·&nbsp; ".join(f"`{src} → {dst}`" for src, dst in pairs)
+                # One line while the pairs fit on one; past that they would wrap into the
+                # properties below, so the list folds away instead.
+                if sum(len(f"{src} → {dst}   ") for src, dst in pairs) <= 80:
+                    st.markdown(f"**Connects** &nbsp;{joined}", unsafe_allow_html=True)
+                else:
+                    with st.expander(f"Connects · {len(pairs)} node-type pairs"):
+                        st.markdown(joined, unsafe_allow_html=True)
+        else:
+            st.write(_TYPE_NOTES.get(chosen["name"], _VERTEX_FALLBACK))
 
         col_props, col_idx = st.columns(2)
         with col_props:
@@ -2200,7 +2197,7 @@ _PAGES = {
 
 # The dashboard's own default, deliberately not ARCADEDB_DATABASE: cron reads that from
 # .env, so pointing the UI at a different graph must not go through it.
-_DEFAULT_DB = "rice"
+_DEFAULT_DB = "human"
 
 
 def _nav_changed() -> None:
@@ -2214,6 +2211,12 @@ def _nav_changed() -> None:
     _reset_nav()
 
 
+def _go_home() -> None:
+    """The wordmark is the way back out of wherever you are."""
+    st.session_state["nav_page"] = "Home"
+    _reset_nav()
+
+
 def _top_nav() -> str:
     """The app's single chrome: wordmark, page control, database picker. Replaces the
     sidebar, which spent a full gutter on three options."""
@@ -2224,11 +2227,7 @@ def _top_nav() -> str:
 
     col_brand, col_pages, col_db = st.columns([1.6, 4.4, 1.2], vertical_alignment="center")
     with col_brand:
-        st.markdown(
-            '<span style="font-family:\'Bricolage Grotesque\', sans-serif; font-weight:700; '
-            'font-size:1.5rem">LitGraph<span style="color:#B8D400">.</span></span>',
-            unsafe_allow_html=True,
-        )
+        st.button("LitGraph", key="wordmark", type="tertiary", on_click=_go_home)
     with col_pages:
         st.session_state.setdefault("nav_page", "Home")
         st.segmented_control(
@@ -2251,6 +2250,12 @@ def _top_nav() -> str:
     )
     return st.session_state.get("nav_page") or "Home"
 
+
+# The URL carries the page, so a reload or a shared link lands where you were rather
+# than back on Home. Seeded before the nav renders, which is what fixes the page.
+if "nav_page" not in st.session_state:
+    _wanted = (st.query_params.get("page") or "").lower()
+    st.session_state["nav_page"] = next((p for p in _PAGES if p.lower() == _wanted), "Home")
 
 page = _top_nav()
 st.session_state["db"] = st.session_state["db_select"]
@@ -2294,13 +2299,15 @@ _browser_behaviours()
 
 _view = st.session_state["view"]
 if _view:
-    st.query_params.from_dict({_view[0]: _view[1]})
+    # The page rides along so leaving the entity returns to the page behind it.
+    st.query_params.from_dict({"page": page.lower(), _view[0]: _view[1]})
     _open_view(_view[0], _view[1])
 else:
     # `edit` survives the clear: it switches on the backdrop position editor, and the
     # rewrite that drops stale entity params would otherwise strip it on every rerun.
     _keep = {k: st.query_params[k] for k in ("edit", "anchors") if st.query_params.get(k)}
     st.query_params.clear()
+    st.query_params["page"] = page.lower()
     for _k, _v in _keep.items():
         st.query_params[_k] = _v
     _PAGES[page]()

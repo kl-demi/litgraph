@@ -1,3 +1,5 @@
+import json
+
 from litgraph.config import get_settings
 from litgraph.db import arcadedb_http
 from litgraph.db.neo4j_client import run_read, run_write
@@ -125,6 +127,19 @@ SET g.papers = $papers,
     g.latest_published = $latest_published
 """
 
+# Which node types each edge type joins. Schema shape rather than data: it changes only
+# when a loader starts writing a new kind of edge, but measuring it costs a full scan of
+# the edge type, so it is stored on the singleton alongside the counters.
+_EDGE_ENDPOINTS_SNAPSHOT = """
+MATCH (g:GraphStats {id: 'singleton'})
+RETURN g.edge_endpoints AS edge_endpoints
+"""
+
+_SAVE_EDGE_ENDPOINTS = """
+MERGE (g:GraphStats {id: 'singleton'})
+SET g.edge_endpoints = $edge_endpoints
+"""
+
 _LATEST_PAPERS = """
 MATCH (p:Paper)
 WHERE p.published_date IS NOT NULL
@@ -192,6 +207,52 @@ def rebuild_stats() -> None:
         **node_counts,
         **edge_counts,
     )
+    rebuild_edge_endpoints()
+
+
+def _edge_type_names() -> list[str]:
+    """Every edge type the database actually holds."""
+    if get_settings().graph_backend == "neo4j":
+        return [r["relationshipType"] for r in run_read("CALL db.relationshipTypes()")]
+    rows = arcadedb_http.run_query("SELECT FROM schema:types")
+    return [r["name"] for r in rows if r.get("type") == "edge"]
+
+
+def _scan_edge_endpoints(name: str) -> list[list[str]]:
+    """Node-type pairs one edge type joins, measured over every edge of that type."""
+    if get_settings().graph_backend == "neo4j":
+        rows = run_read(
+            f"MATCH (a)-[:{name}]->(b) RETURN DISTINCT labels(a)[0] AS src, labels(b)[0] AS dst"
+        )
+    else:
+        # outV()/inV() because the plain out/in projections come back null on an edge.
+        # The count is discarded but not optional: ArcadeDB rejects a GROUP BY that
+        # projects no aggregate.
+        rows = arcadedb_http.run_query(
+            f"SELECT outV().@type AS src, inV().@type AS dst, count(*) AS n "
+            f"FROM `{name}` GROUP BY src, dst"
+        )
+    return sorted([r["src"], r["dst"]] for r in rows if r.get("src") and r.get("dst"))
+
+
+def edge_endpoints() -> dict[str, list[list[str]]]:
+    """Cached node-type pairs per edge type. Empty until `rebuild_stats` has run."""
+    rows = run_read(_EDGE_ENDPOINTS_SNAPSHOT)
+    stored = rows[0]["edge_endpoints"] if rows else None
+    return json.loads(stored) if stored else {}
+
+
+def rebuild_edge_endpoints() -> dict[str, list[list[str]]]:
+    """Rescan every registered edge type's endpoints onto the GraphStats singleton.
+
+    Measured rather than read off the registry, which records only what a loader
+    declared: MENTIONS is registered Paper -> Gene but also reaches Compound, Organism
+    and Disease. The type list comes from the database too, so an edge type written by
+    a loader that was never imported here is still covered.
+    """
+    found = {name: _scan_edge_endpoints(name) for name in _edge_type_names()}
+    run_write(_SAVE_EDGE_ENDPOINTS, edge_endpoints=json.dumps(found))
+    return found
 
 
 def latest_papers(limit: int = 10) -> list[dict]:

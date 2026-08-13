@@ -390,6 +390,20 @@ def stats_rebuild() -> None:
     console.print("[green]Stats rebuilt.[/green]")
 
 
+@stats_app.command("endpoints")
+def stats_endpoints() -> None:
+    """Record which node types each edge type joins (full scan per edge type).
+
+    Part of `stats rebuild`; separate here because the dashboard reads these to
+    describe edges and they only go stale when a loader starts writing a new pair."""
+    from litgraph.search.stats import rebuild_edge_endpoints
+
+    for name, pairs in rebuild_edge_endpoints().items():
+        joined = ", ".join(f"{src} → {dst}" for src, dst in pairs) or "—"
+        console.print(f"  {name:20} {joined}")
+    console.print("[green]Edge endpoints recorded.[/green]")
+
+
 
 if __name__ == "__main__":
     app()
