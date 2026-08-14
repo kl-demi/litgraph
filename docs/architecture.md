@@ -51,6 +51,7 @@ data/                  cached source downloads (gitignored)
 | Identity resolution | `spokebio/ingest/{gene,chebi_mesh}_crosswalk.py` | §8 |
 | Entity extraction | `spokebio/extract.py`, `spokebio/ingest/pubtator.py` | §9 |
 | Query | `litgraph/search/*`, `cli.py` | §10 |
+| Cached figures | `search/stats.py` (`GraphStats` singleton) | §11 |
 
 ## 2. Storage backends
 
@@ -317,7 +318,7 @@ and are enriched afterwards by the Disease Ontology loader (§7-8).
 - `search/keyword.py` — full-text index
 - `search/semantic.py` — vector index (SPECTER2)
 - `search/citations.py` — citation traversals, most-cited
-- `search/stats.py` — graph counts, overview
+- `search/stats.py` — graph counts and the cached figures behind them (§11)
 - `search/entities.py` — name/identifier lookup across whatever entity types a
   database has, discovered from its schema rather than listed in code
 - `search/genes.py`, `papers.py`, `pathways.py`, `traits.py`, `compounds.py`,
@@ -329,7 +330,32 @@ Two front ends: the `litgraph` CLI, and `apps/dashboard.py` (Streamlit — a lan
 of corpus figures, search over papers and entities, a page per entity type, and a
 SQL/Cypher console that renders results as a graph).
 
-## 11. Pending work
+## 11. GraphStats
+
+`GraphStats {id: 'singleton'}` stores cached statistics for fast serving:
+
+- **Counters** — papers, stubs, enriched, embedded, authors, categories, the three edge
+  totals, and the published date range. Every write in `graph/upsert.py` updates these,
+  so they stay current on their own.
+- **`edge_endpoints`** — which node types that each edge type joins.
+- **`search_hints`** — the suggestion chips under the search box.
+
+The last two are rebuilt by `litgraph stats cache`, which full-scans. They only go stale
+when a loader starts writing a new kind of edge, or when the corpus shifts enough to
+change which entities are the most-mentioned.
+
+Two ways to read the counters:
+
+- `counters()` — the singleton, and nothing else. One indexed read.
+- `overview()` — the same, plus a top-category lookup and a source breakdown. The
+  breakdown is a full Paper scan, so only the CLI snapshot calls it.
+
+**Careful:** nothing schedules `litgraph stats cache` yet. `rebuild_stats()` calls it,
+but that only runs when someone types `litgraph stats rebuild`. Until it joins the
+nightly ingest, the endpoint pairs and the chips hold whatever they held the last time
+somebody ran it by hand.
+
+## 12. Pending work
 
 1. Dashboard: an ingestion-status page. Author and Category are the last connected
    types without a page of their own.
