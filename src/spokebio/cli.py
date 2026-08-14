@@ -11,6 +11,7 @@ from spokebio.pipeline import (
     run_go_ingest,
     run_pubtator_mentions,
     run_reactome_ingest,
+    run_reactome_maps_to_ingest,
 )
 from spokebio.release_check import check_and_reingest
 from spokebio.schema_ext import ensure_schema
@@ -45,7 +46,9 @@ def reactome_pathways(
     ),
 ) -> None:
     """Ingest Reactome's human pathways, gene participation, compound production, and
-    GO pathway correspondences."""
+    GO pathway correspondences. If pathways/PARTICIPATES_IN/PRODUCES are already loaded
+    and you only need the MAPS_TO edges, use `reactome-maps-to` instead --
+    PARTICIPATES_IN alone can take ~30 minutes to re-check on a full run."""
     ensure_schema()
     totals = run_reactome_ingest(batch_size=batch_size, force_download=force_download, mesh_year=mesh_year)
     console.print(
@@ -54,6 +57,22 @@ def reactome_pathways(
         f"PARTICIPATES_IN edges), {totals['produces_processed']} pathway-compound pairs "
         f"(+{totals['new_produces_edges']} new PRODUCES edges), {totals['go_mappings_processed']} "
         f"Reactome-GO pathway correspondences (+{totals['new_maps_to_edges']} new MAPS_TO edges).[/green]"
+    )
+
+
+@app.command("reactome-maps-to")
+def reactome_maps_to(
+    batch_size: int = typer.Option(500, "--batch-size"),
+    force_download: bool = typer.Option(False, "--force-download", help="Re-download even if already cached"),
+) -> None:
+    """Ingest only Reactome<->GO pathway correspondences (MAPS_TO), skipping the slower
+    pathways/PARTICIPATES_IN/PRODUCES passes `reactome-pathways` also does. Use this to
+    backfill MAPS_TO onto a database that already has the rest of Reactome loaded."""
+    ensure_schema()
+    totals = run_reactome_maps_to_ingest(batch_size=batch_size, force_download=force_download)
+    console.print(
+        f"[green]Processed {totals['go_mappings_processed']} Reactome-GO pathway correspondences, "
+        f"+{totals['new_maps_to_edges']} new MAPS_TO edges.[/green]"
     )
 
 

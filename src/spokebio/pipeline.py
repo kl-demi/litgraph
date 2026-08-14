@@ -254,7 +254,18 @@ def run_reactome_ingest(
         f"+{totals['new_produces_edges']} new PRODUCES edges"
     )
 
+    totals.update(_ingest_pathway_go_mappings(go_mapping_path, batch_size))
+    return totals
+
+
+def _ingest_pathway_go_mappings(go_mapping_path: str, batch_size: int) -> dict[str, int]:
+    """The MAPS_TO pass shared by `run_reactome_ingest` and `run_reactome_maps_to_ingest`.
+
+    Writes only -- neither endpoint is bootstrapped, so this never touches Pathway,
+    PARTICIPATES_IN, or PRODUCES.
+    """
     go_mappings = extract_pathway_go_mappings(go_mapping_path)
+    totals = {"go_mappings_processed": 0, "new_maps_to_edges": 0}
     with _progress() as progress:
         task = progress.add_task("Writing MAPS_TO edges", total=len(go_mappings))
         mapping_batch: list[PathwayGoMapping] = []
@@ -276,3 +287,17 @@ def run_reactome_ingest(
         f"isn't a biological_process Pathway node yet are silently skipped)"
     )
     return totals
+
+
+def run_reactome_maps_to_ingest(batch_size: int = 500, force_download: bool = False) -> dict[str, int]:
+    """Ingest just Pathways2GoTerms_human.txt's MAPS_TO edges, skipping the pathways/
+    PARTICIPATES_IN/PRODUCES passes of `run_reactome_ingest`.
+
+    For backfilling MAPS_TO onto a database that already has Reactome's pathways/genes/
+    compounds loaded: PARTICIPATES_IN alone can take ~30 minutes to re-check on a full
+    run, all wasted work if only this pass is new. Neither endpoint bootstraps, so this
+    is safe to run standalone -- rows whose Pathway nodes don't exist yet are silently
+    skipped, same as within the full pipeline.
+    """
+    go_mapping_path = ensure_reactome_file("Pathways2GoTerms_human.txt", force=force_download)
+    return _ingest_pathway_go_mappings(go_mapping_path, batch_size)
