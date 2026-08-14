@@ -49,26 +49,20 @@ def _progress() -> Progress:
 
 
 def run_pubtator_mentions(limit: int = 500, requests_per_second: float = 3.0) -> dict[str, int]:
-    """Run the PubTator3 extractor over up to ``limit`` unchecked PubMed papers.
-
-    Deliberately conservative so this can run alongside another ingestion job (e.g.
-    `litgraph enrich`) against the same ArcadeDB instance: never SETs a property on a
-    Paper vertex (see upsert.py), and paces PubTator3 requests at
-    ``requests_per_second`` rather than firing batches back-to-back.
-    """
+    """Run the PubTator3 extractor for up to ``limit`` unchecked PubMed papers."""
     return run_extraction(PubTatorExtractor(requests_per_second=requests_per_second), limit=limit)
 
 
 def run_go_ingest(
     obo_path: str | None = None, batch_size: int = 500, force_download: bool = False
 ) -> dict[str, int]:
-    """Ingest GO's biological_process branch as Pathway nodes -- the species-agnostic
-    half of pathway ingestion (docs/plant_schema.md; PlantCyc/MetaCyc's species-specific
-    pathways are a separate, not-yet-built pass pending its license/PGDB files).
+    """Ingest Gene Ontology (GO)'s biological_process branch as Pathway nodes.
+    
+    These nodes are species-agnostic; see PlantCyc/MetaCyc for species-specific
+    ones (requires license/PGDB files).
 
     Downloads go-basic.obo to ``obo_path`` (default: data/go-basic.obo) if not already
-    cached there. No Paper interaction at all -- pure Pathway-node upserts -- so this
-    carries no risk to any other job running against the same ArcadeDB instance.
+    cached there. No Paper interaction, so this is safe alongside another ingestion job.
     """
     path = ensure_obo_file(obo_path or DEFAULT_OBO_PATH, force=force_download)
     totals = {"pathways_processed": 0, "new_pathways": 0}

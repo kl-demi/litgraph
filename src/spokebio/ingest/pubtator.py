@@ -7,9 +7,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from litgraph.db.neo4j_client import chunked
 from spokebio.models import EntityMention
 
-# Confirmed against the live API (2026-07-21): 100 pmids in one request succeeds,
-# 101 fails with HTTP 400 {"The field \"pmids\" can not be longer than 100"} -- this
-# is a hard per-request ceiling PubTator3 enforces, not a tunable default.
+# PubTator3 enforces a hard ceiling of 100 pmids per request (2026-07-21).
+# 101 fails with HTTP 400: {"The field \"pmids\" can not be longer than 100"}.
 EXPORT_BATCH_SIZE = 100
 
 # Conversion between PubTator's annotations and ArcadeDB's node types
@@ -20,14 +19,12 @@ _VERTEX_TYPE_BY_ANNOTATION_TYPE = {
     "Disease": "Disease",
 }
 
-# Organism's key is the bare NCBI Taxonomy id (a single global namespace already, see
-# docs/plant_schema.md). Gene/Compound get a source prefix -- note PubTator3 normalizes
-# chemicals to MeSH ids today (confirmed live, e.g. "MESH:D000241"), not ChEBI, despite
-# plant_schema.md's Compound node originally being designed around a chebi_id key: a
-# field literally named chebi_id holding a MeSH id would misrepresent the data, so
-# graph/upsert of this module names it compound_id instead pending a real ChEBI/PubChem
-# crosswalk.
-_DB_PREFIXES = {"ncbi_gene": "ncbigene", "ncbi_mesh": "mesh", "ncbi_taxonomy": None}
+# Source prefix for each biology entity
+_DB_PREFIXES = {
+    "ncbi_gene": "ncbigene",    # Gene
+    "ncbi_mesh": "mesh",        # Compound
+    "ncbi_taxonomy": None       # Organism
+}
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -37,11 +34,15 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 def _entity_name(annotation_type: str, infons: dict, text: str) -> str:
-    # For Species, infons["name"] is just the taxon id (e.g. "9606"), so we
-    # need the actual mention text ("human", "Arabidopsis") to get human-readable 
-    # names. Conversely, for Gene/Chemical, infons["name"] is the canonical 
-    # symbol/name (e.g. "AGO2", "Adenosine"), more useful than whatever synonym/
-    # abbreviation was actually written in the source text.
+    """Get the human-readable name for an entity.
+    
+    Depending on the entity, this is either infons["name"] or the mention text.
+    
+    For Organism, the latter is preferred: "human", "Arabidopsis" vs. "9606".
+    For Gene/Chemical, the former is preferred: "AGO2", "Adenosine" vs. 
+    some synonym/abbreviation that was actually written in the source text.
+    """
+    
     if annotation_type == "Species":
         return text or infons.get("name") or ""
     return infons.get("name") or text or ""
@@ -50,7 +51,7 @@ def _entity_name(annotation_type: str, infons: dict, text: str) -> str:
 def extract_mentions(annotations: list[dict]) -> list[EntityMention]:
     """Filter a PubTator3 document's raw annotations down to normalized Gene/Chemical/
     Species/Disease mentions, deduped within the document. Drops anything unnormalized
-    (``valid: false`` -- no stable ID to key a node on) and anything outside the
+    (``valid: false``: no stable ID to key a node on) and anything outside the
     listed annotation types.
     """
     seen: set[tuple[str, str]] = set()
@@ -133,8 +134,8 @@ class PubTatorClient:
         return response.json()
 
     def fetch_mentions(self, pmids: list[str]) -> Iterator[tuple[str, list[EntityMention]]]:
-        """Yield ``(pmid, mentions)`` for each requested pmid PubTator3 has annotations
-        for, batching requests at its hard ceiling of 100 PMIDs per call. PMIDs it
+        """Yield ``(pmid, mentions)`` for each requested pmid that PubTator3 has annotations
+        for, batching at its hard ceiling of 100 PMIDs per call. PMIDs it
         doesn't recognize are silently absent from the response -- callers should 
         expect fewer results than requested.
         """
