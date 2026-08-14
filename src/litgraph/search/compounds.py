@@ -7,8 +7,6 @@ MATCH (c:Compound {compound_id: $id})
 RETURN c.compound_id AS compound_id, c.name AS name
 """
 
-# MENTIONS is polymorphic -- Paper reaches Gene, Compound and Organism through it -- so
-# the destination label is what makes this a compound query rather than a gene one.
 _PAPERS = """
 MATCH (p:Paper)-[m:MENTIONS]->(:Compound {compound_id: $id})
 RETURN p.id AS id, p.title AS title, p.pmid AS pmid, m.source AS source

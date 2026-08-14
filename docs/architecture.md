@@ -1,8 +1,10 @@
 # Architecture
 
-LitGraph is a literature knowledge graph: papers from arXiv/Kaggle/PubMed, joined with
-biology entities (genes, compounds, pathways) so a query can traverse from a paper to
-the biology it's evidence for. Two Python packages share one database:
+LitGraph is a literature knowledge graph that links papers from arXiv/Kaggle/PubMed 
+with biology entities (genes, compounds, pathways), such that a biology-related query
+can draw evidence from academic research.
+
+There are two Python packages that make up the graph:
 
 - `src/litgraph/` — the source-agnostic core: schema registry, models, write path, search,
   paper ingestion, CLI.
@@ -62,7 +64,7 @@ Two transports exist for ArcadeDB, deliberately:
 - **Cypher over Bolt** (`neo4j_client.py`) — reads, checkpoints, GraphStats updates, and
   everything on the Neo4j backend.
 
-Different read/write protocols are because Cypher/Bolt reads can run against both Neo4j and ArcadeDB backends, while writes, vector search, and full-text search are backend-specific.
+There are different protocols for reads vs. writes because Cypher reads can run against both Neo4j and ArcadeDB backends, while writes, vector search, and full-text search are backend-specific.
 
 ## 3. Schema registry
 
@@ -108,13 +110,6 @@ branch, alongside the loaders that populate them (§7) — not on `main`.
 | AUTHORED | Author → Paper | — | paper ingest |
 | MENTIONS | Paper → Gene/Compound/Organism/Disease | source (extractor) | extraction |
 | IS_A | Disease → Disease | — | Disease Ontology |
-
-`MENTIONS` is registered `Paper → Gene`; the writer passes the other three destinations
-as a `dst` override (`upsert.py::_MENTION_TARGETS`). The registry alone therefore
-under-reports what the edge connects — read the data, not the declaration, when asking
-what a MENTIONS edge can point at.
-| PARTICIPATES_IN | Gene → Pathway | evidence_code | Reactome |
-| PRODUCES | Pathway → Compound | evidence_code | Reactome |
 
 An `ASSOCIATED_WITH` (Gene → Trait) edge type exists on the `rice` branch, not `main`.
 
@@ -268,15 +263,10 @@ ingestion framework.
 | ChEBI + MeSH + Biomappings | compound crosswalk | — |
 | Disease Ontology (`doid.obo`) | Disease names + `doid`, IS_A edges | MeSH xref → `mesh:` key |
 
-Load order matters: GO's Pathway nodes must exist before Reactome writes edges to them
-— an edge to a term GO hasn't written yet is dropped, not created. Disease Ontology is
-the same shape in reverse: it enriches Disease nodes PubTator has already created (§9),
-and adds none of its own.
+Load order matters: GO's Pathway nodes must exist before Reactome writes edges to 
+them. Similarly, PubTator's Disease nodes must exist before Disease Ontology enrich them.
 
-- All source downloads share one retry-with-cache helper.
-- Duplicate evidence for the same pair resolves by trust rank (`TAS` beats `IEA`, §4).
-- Each loader counts rows dropped as duplicates or unresolved, logged per run, so a
-  rising drop rate is visible instead of silent.
+All source downloads share a retry-with-cache helper, reporting rows dropped as duplicates or unresolved if there are any.
 
 ## 8. Identity resolution
 
@@ -306,10 +296,12 @@ hierarchy to unmapped intermediate terms (3,380 edges instead of 6,059).
 
 ## 9. Entity extraction
 
-Extractors implement a shared `Extractor` protocol (`spokebio/extract.py`) instead of
-each writing its own fetch/checkpoint/upsert loop: a `name`, which Paper properties a
-candidate needs (`requires`), and an `extract()` iterator yielding `EntityMention`s.
-One shared loop, `run_extraction()`, drives any extractor.
+Extractors implement a shared `Extractor` protocol (`spokebio/extract.py`): a `name`, 
+which Paper properties a candidate needs, and an `extract()` iterator 
+yielding `EntityMention`s.
+
+
+Call `run_extraction()` to run the extraction loop.
 
 - **Coverage** is tracked per extractor (`ExtractionChecked`), so a second extractor
   sees the whole corpus as unchecked.

@@ -11,15 +11,15 @@ _MESH_XREF_PREFIX = "MESH:"
 
 
 def ensure_doid_file(path: str | Path = DEFAULT_DOID_PATH, force: bool = False) -> str:
-    """Download doid.obo if it isn't already cached locally. Free, no license/API key
-    needed -- a ~7MB one-time download, refreshed only when ``force=True``.
+    """Download doid.obo if it isn't already cached locally. Free, one-time 7MB download,
+    refreshed only when ``force=True``.
     """
     return ensure_cached_file(DOID_OBO_URL, Path(path), force)
 
 
 def iter_term_stanzas(path: str | Path) -> Iterator[dict]:
-    """Stream-parse doid.obo's ``[Term]`` stanzas. Separate from go.py's parser because
-    DO needs the multi-valued ``xref`` and ``is_a`` fields GO's never collects.
+    """Stream-parse doid.obo's ``[Term]`` stanzas. Different from go.py's parser because
+    DO needs the ``xref`` and ``is_a`` fields that GO doesn't collect.
     """
     current: dict | None = None
     with open(path, encoding="utf-8") as f:
@@ -70,15 +70,18 @@ def _mesh_ids(term: dict) -> list[str]:
 
 
 def extract_disease_xrefs(stanzas: Iterable[dict]) -> Iterator[DiseaseXref]:
-    """Yield one DiseaseXref per MeSH id DO cross-references.
+    """Yield one cross-reference from DOID to MeSH ID for a disease node.
 
-    Only ~30% of DO's live terms carry a MeSH xref (4,013 of 12,247 as of the 2026-07-31
-    release), which is why Disease stays MeSH-keyed and DOID rides along as a property --
-    keying on DOID would drop every disease DO does not map. Measured against real
-    PubTator output, DOID covers 62% of disease mentions.
+    Disease nodes get Paper-[MENTIONS]->Disease relationships from Pubtator3, which
+    uses MeSH IDs. They get descriptions and Disease-[IS_A]->Disease relationships
+    from Disease Ontology, which uses DOIDs.
+    
+    Only ~30% of DO's terms carry a MeSH xref (as of the 2026-07-31 DO release), so 
+    Disease is MeSH-keyed and has DOID as an optional property.
 
-    A MeSH id can map to several DOIDs (248 do) where DO draws a finer distinction than
-    MeSH; the lexicographically smallest wins, so a re-run is deterministic.
+    Sometimes a MeSH id can map to several DOIDs, eg. "Inflammation" in MeSH gets 
+    mapped to multiple specific diseases in DO. In such case, the lexicographically 
+    smallest gets chosen.
     """
     live = _live_terms(stanzas)
     best: dict[str, tuple[str, str]] = {}
@@ -94,12 +97,11 @@ def extract_disease_xrefs(stanzas: Iterable[dict]) -> Iterator[DiseaseXref]:
 
 
 def extract_is_a_edges(stanzas: Iterable[dict]) -> Iterator[DiseaseIsA]:
-    """Project DO's is_a hierarchy onto MeSH-keyed Disease nodes.
-
-    Walks up through DO terms that carry no MeSH xref to reach each term's *nearest*
-    mapped ancestors, rather than only projecting edges whose two ends both map. On the
-    2026-07-31 release that is 6,059 edges instead of 3,380 -- the direct-only projection
-    silently loses 44% of the hierarchy to unmapped intermediate terms.
+    """Get hierarchy edges for disease nodes: whether disease A is a subtype of disease B.
+    
+    IS_A relationships come from Disease Ontology (DO), which get mapped onto MeSH-keyed 
+    Disease nodes. On DO terms that have no MeSH xref, the edge is drawn to its nearest
+    MeSH-mapped ancestors.
     """
     live = _live_terms(stanzas)
     parents = {doid: [p for p in term["is_a"] if p in live] for doid, term in live.items()}
@@ -120,8 +122,7 @@ def extract_is_a_edges(stanzas: Iterable[dict]) -> Iterator[DiseaseIsA]:
 def _nearest_mapped_ancestors(
     doid: str, parents: dict[str, list[str]], mesh_of: dict[str, list[str]]
 ) -> set[str]:
-    """The closest MeSH-mapped ancestors of `doid`, stopping at each one rather than
-    continuing to its own parents (the graph keeps only the tightest claim)."""
+    """Find the closest MeSH-mapped ancestors of `doid`."""
     found: set[str] = set()
     visited: set[str] = set()
     stack = list(parents.get(doid, []))

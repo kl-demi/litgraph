@@ -1,9 +1,4 @@
-"""One Organism record and its neighbours, for the dashboard's Organism page.
-
-Organism is reached only through MENTIONS, which is polymorphic: Paper points at Gene,
-Compound and Organism with the same edge type, so the destination label carries the
-whole distinction.
-"""
+"""One Organism record and its neighbours, for the dashboard's Organism page."""
 
 from litgraph.db.neo4j_client import run_read
 
