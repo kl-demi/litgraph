@@ -42,11 +42,24 @@ def placeholder(db: str) -> str:
 
 
 def suggestions(db: str, count: int = 4) -> tuple[str, ...]:
+    """Suggestion chips for this database, from the cache if one has been built.
+
+    Falls back to measuring them, so a database that has never had `litgraph stats
+    rebuild` run against it still gets chips -- just slowly.
+    """
+    from litgraph.search.stats import search_hints  # circular at module level
+
+    cached = search_hints()
+    return tuple(cached[:count]) if cached else measure_suggestions(count)
+
+
+def measure_suggestions(count: int = 4) -> tuple[str, ...]:
     """The best-connected entity of each kind, most-connected kind first.
 
     Ranked by how many papers mention the entity, so a suggestion is guaranteed to
     return results. Types reached only by non-MENTIONS edges (Pathway, Trait) fall back
-    to total degree.
+    to total degree. Scans a slice of MENTIONS per type; prefer the cached
+    `suggestions`.
     """
     available = searchable_types()
     picked: list[str] = []

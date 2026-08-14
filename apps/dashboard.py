@@ -47,9 +47,9 @@ from litgraph.search.pathways import compounds_produced, genes_in_pathway, get_p
 from litgraph.search.traits import genes_for_trait, get_trait, papers_for_trait
 from litgraph.search.semantic import semantic_search
 from litgraph.search.stats import (
+    counters,
     edge_endpoints,
     latest_papers,
-    overview,
     top_authors,
     type_counts,
 )
@@ -561,7 +561,9 @@ def _databases() -> list[str]:
 
 @st.cache_data(ttl=300)
 def _overview(db: str):
-    return overview()
+    """Counters only: the landing page shows coverage bars, not the source breakdown,
+    and `overview` would spend 21s full-scanning Paper to build one it never draws."""
+    return counters()
 
 
 @st.cache_data(ttl=300)

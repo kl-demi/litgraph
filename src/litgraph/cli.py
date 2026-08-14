@@ -392,18 +392,18 @@ def stats_rebuild() -> None:
     console.print("[green]Stats rebuilt.[/green]")
 
 
-@stats_app.command("endpoints")
-def stats_endpoints() -> None:
-    """Record which node types each edge type joins (full scan per edge type).
-
-    Part of `stats rebuild`; separate here because the dashboard reads these to
-    describe edges and they only go stale when a loader starts writing a new pair."""
-    from litgraph.search.stats import rebuild_edge_endpoints
+@stats_app.command("cache")
+def stats_cache() -> None:
+    """Rebuild what the dashboard reads instead of measuring per visit: each edge type's
+    endpoints, and the search box's suggestion chips. Full scans; part of `stats
+    rebuild`, separate here because these go stale far more slowly than the counters."""
+    from litgraph.search.stats import rebuild_edge_endpoints, rebuild_search_hints
 
     for name, pairs in rebuild_edge_endpoints().items():
         joined = ", ".join(f"{src} → {dst}" for src, dst in pairs) or "—"
         console.print(f"  {name:20} {joined}")
-    console.print("[green]Edge endpoints recorded.[/green]")
+    console.print(f"  {'search hints':20} {', '.join(rebuild_search_hints()) or '—'}")
+    console.print("[green]Dashboard cache rebuilt.[/green]")
 
 
 

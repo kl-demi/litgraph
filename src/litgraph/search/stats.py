@@ -140,6 +140,19 @@ MERGE (g:GraphStats {id: 'singleton'})
 SET g.edge_endpoints = $edge_endpoints
 """
 
+# The search box's suggestion chips. Measured by ranking each entity type by how many
+# papers mention it, which scans that slice of MENTIONS -- 6.5s on the human graph, paid
+# on the landing page, so the result is stored rather than measured per visit.
+_SEARCH_HINTS_SNAPSHOT = """
+MATCH (g:GraphStats {id: 'singleton'})
+RETURN g.search_hints AS search_hints
+"""
+
+_SAVE_SEARCH_HINTS = """
+MERGE (g:GraphStats {id: 'singleton'})
+SET g.search_hints = $search_hints
+"""
+
 _LATEST_PAPERS = """
 MATCH (p:Paper)
 WHERE p.published_date IS NOT NULL
@@ -173,18 +186,30 @@ def paper_count() -> int:
     return run_read(_PAPER_COUNT)[0]["paper_count"]
 
 
-def overview() -> dict:
-    """A snapshot of what's in the graph: counts, enrichment coverage, date range."""
+def counters() -> dict:
+    """The pre-computed counters alone, without the live scans `overview` adds.
+
+    One indexed read of the singleton. For callers that only need the totals -- the
+    dashboard's coverage bars -- where the source breakdown would dominate the cost.
+    """
     rows = run_read(_GRAPHSTATS_SNAPSHOT)
     if not rows:
         rebuild_stats()
         rows = run_read(_GRAPHSTATS_SNAPSHOT)
+    return rows[0]
 
+
+def overview() -> dict:
+    """A snapshot of what's in the graph: counts, enrichment coverage, date range.
+
+    Adds two live scans to `counters`; the source breakdown is a full Paper scan (21s
+    at 298K papers), so prefer `counters` unless the breakdown is actually shown.
+    """
     top_category_rows = run_read(_TOP_CATEGORY)
     top_category = top_category_rows[0] if top_category_rows else None
     by_source = run_read(_SOURCE_BREAKDOWN)
 
-    return {**rows[0], "top_category": top_category, "by_source": by_source}
+    return {**counters(), "top_category": top_category, "by_source": by_source}
 
 
 def rebuild_stats() -> None:
@@ -208,6 +233,7 @@ def rebuild_stats() -> None:
         **edge_counts,
     )
     rebuild_edge_endpoints()
+    rebuild_search_hints()
 
 
 def _edge_type_names() -> list[str]:
@@ -253,6 +279,22 @@ def rebuild_edge_endpoints() -> dict[str, list[list[str]]]:
     found = {name: _scan_edge_endpoints(name) for name in _edge_type_names()}
     run_write(_SAVE_EDGE_ENDPOINTS, edge_endpoints=json.dumps(found))
     return found
+
+
+def search_hints() -> list[str]:
+    """Cached suggestion chips for the search box. Empty until a rebuild has run."""
+    rows = run_read(_SEARCH_HINTS_SNAPSHOT)
+    stored = rows[0]["search_hints"] if rows else None
+    return json.loads(stored) if stored else []
+
+
+def rebuild_search_hints() -> list[str]:
+    """Re-measure the search box's suggestion chips onto the GraphStats singleton."""
+    from litgraph.search.corpus import measure_suggestions  # circular at module level
+
+    hints = list(measure_suggestions())
+    run_write(_SAVE_SEARCH_HINTS, search_hints=json.dumps(hints))
+    return hints
 
 
 def latest_papers(limit: int = 10) -> list[dict]:
