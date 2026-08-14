@@ -2,6 +2,9 @@
 
 from litgraph.db.neo4j_client import run_read
 
+# The anchor node is named even where the name is unused: ArcadeDB's Cypher layer
+# only resolves an inline key predicate through the index on a *named* node, and
+# full-scans the type otherwise (20s vs 0.1s on a 300k-paper graph).
 _PAPER = """
 MATCH (p:Paper {id: $id})
 RETURN p.id AS id, p.title AS title, p.abstract AS abstract, p.published_date AS published_date,
@@ -9,16 +12,16 @@ RETURN p.id AS id, p.title AS title, p.abstract AS abstract, p.published_date AS
        p.journal_ref AS journal_ref, p.is_stub AS is_stub
 """
 
-_AUTHORS = "MATCH (a:Author)-[:AUTHORED]->(:Paper {id: $id}) RETURN a.name AS name LIMIT $limit"
+_AUTHORS = "MATCH (a:Author)-[:AUTHORED]->(p:Paper {id: $id}) RETURN a.name AS name LIMIT $limit"
 
 _GENES = """
-MATCH (:Paper {id: $id})-[m:MENTIONS]->(g:Gene)
+MATCH (p:Paper {id: $id})-[m:MENTIONS]->(g:Gene)
 RETURN g.gene_id AS gene_id, g.name AS name, m.source AS source
 ORDER BY g.name LIMIT $limit
 """
 
 _CATEGORIES = """
-MATCH (:Paper {id: $id})-[:IN_CATEGORY]->(c:Category)
+MATCH (p:Paper {id: $id})-[:IN_CATEGORY]->(c:Category)
 RETURN c.code AS code, c.name AS name, c.vocabulary AS vocabulary
 ORDER BY c.name LIMIT $limit
 """

@@ -2,19 +2,22 @@
 
 from litgraph.db.neo4j_client import run_read
 
+# The anchor node is named even where the name is unused: ArcadeDB's Cypher layer
+# only resolves an inline key predicate through the index on a *named* node, and
+# full-scans the type otherwise (20s vs 0.1s on a 300k-paper graph).
 _PATHWAY = """
 MATCH (p:Pathway {pathway_id: $id})
 RETURN p.pathway_id AS pathway_id, p.name AS name, p.source_db AS source_db
 """
 
 _GENES = """
-MATCH (g:Gene)-[r:PARTICIPATES_IN]->(:Pathway {pathway_id: $id})
+MATCH (g:Gene)-[r:PARTICIPATES_IN]->(pw:Pathway {pathway_id: $id})
 RETURN g.gene_id AS gene_id, g.name AS name, r.evidence_code AS evidence_code
 ORDER BY g.name LIMIT $limit
 """
 
 _COMPOUNDS = """
-MATCH (:Pathway {pathway_id: $id})-[r:PRODUCES]->(c:Compound)
+MATCH (pw:Pathway {pathway_id: $id})-[r:PRODUCES]->(c:Compound)
 RETURN c.compound_id AS compound_id, c.name AS name, r.evidence_code AS evidence_code
 ORDER BY c.name LIMIT $limit
 """
@@ -22,7 +25,7 @@ ORDER BY c.name LIMIT $limit
 # Papers reach a pathway only through the genes they mention; the ones touching the
 # most of its genes come first, as the strongest evidence for the pathway as a whole.
 _PAPERS = """
-MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:PARTICIPATES_IN]->(:Pathway {pathway_id: $id})
+MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:PARTICIPATES_IN]->(pw:Pathway {pathway_id: $id})
 RETURN pa.id AS id, pa.title AS title, count(DISTINCT g) AS gene_count
 ORDER BY gene_count DESC LIMIT $limit
 """

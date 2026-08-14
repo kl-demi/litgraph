@@ -2,13 +2,16 @@
 
 from litgraph.db.neo4j_client import run_read
 
+# The anchor node is named even where the name is unused: ArcadeDB's Cypher layer
+# only resolves an inline key predicate through the index on a *named* node, and
+# full-scans the type otherwise (20s vs 0.1s on a 300k-paper graph).
 _ORGANISM = """
 MATCH (o:Organism {taxon_id: $id})
 RETURN o.taxon_id AS taxon_id, o.name AS name
 """
 
 _PAPERS = """
-MATCH (p:Paper)-[m:MENTIONS]->(:Organism {taxon_id: $id})
+MATCH (p:Paper)-[m:MENTIONS]->(o:Organism {taxon_id: $id})
 RETURN p.id AS id, p.title AS title, p.pmid AS pmid, m.source AS source
 LIMIT $limit
 """
@@ -16,7 +19,7 @@ LIMIT $limit
 # Genes named in the same papers as this organism, most-shared first. Computed at query
 # time rather than stored, the same shape as co-mentioned genes on the Gene page.
 _GENES = """
-MATCH (p:Paper)-[:MENTIONS]->(:Organism {taxon_id: $id})
+MATCH (p:Paper)-[:MENTIONS]->(o:Organism {taxon_id: $id})
 MATCH (p)-[:MENTIONS]->(g:Gene)
 RETURN g.gene_id AS gene_id, g.name AS name, count(DISTINCT p) AS shared_papers
 ORDER BY shared_papers DESC LIMIT $limit

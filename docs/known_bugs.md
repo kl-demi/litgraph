@@ -86,6 +86,42 @@ Idempotent MERGEs mean no corruption, just wasted NCBI calls that log as success
 
 ## Resolved
 
+### Entity pages took 20-60s: ArcadeDB's Cypher planner ignores unnamed anchors
+**2026-08-12** | `search/{papers,pathways,traits,compounds,organisms,citations}.py`
+
+**Symptom:** opening a paper on the dashboard took ~60s on the 298K-paper `human` graph,
+~5s on `rice`. Every entity page was affected, not just Paper. The queries were already
+anchored on an indexed unique key, so the shape looked correct.
+
+**Root cause:** two separate planner rules in ArcadeDB's Cypher layer, both of which
+silently degrade an indexed lookup to a full type scan.
+
+1. **The anchor must be named.** `MATCH (:Paper {id: $id})-[:MENTIONS]->(g:Gene)` scans
+   all 298K papers (20s); naming it — `(p:Paper {id: $id})` — resolves through
+   `Paper[id]` (0.1s). Same query, same index, 200x. The name is otherwise unused, so
+   it reads like a variable that could be tidied away. It cannot.
+2. **The anchor must be written first when its peer is unbound.** With a labelled peer
+   the planner picks the indexed side either way, but `MATCH (citing)-[:CITES]->(p:Paper
+   {id: $id})` starts from `citing` and scans every vertex in the graph (29s). Written
+   as `MATCH (p:Paper {id: $id})<-[:CITES]-(citing)` it is 0.09s.
+
+A third, unrelated cause in the same page: `WHERE p.arxiv_id = $x OR p.pmid = $x` uses
+neither index (each is indexed separately) and full-scanned Paper. Worse, the dashboard
+passes the canonical `id` (`pmid:42508544`) while the query compared against the bare
+`pmid`, so **References and Cited by were always empty** — the page reported "No citation
+edges for this paper" for every paper, silently.
+
+**Fix:** named every anchor and put it first; replaced the `OR` with
+`citations.resolve_paper_id()`, which tries `id`, `pmid` and `arxiv_id` as separate
+indexed lookups and then traverses from the resolved node. Paper page 60s → 1.7s
+(`human`), 4.5s → 0.7s (`rice`).
+
+**How to catch a recurrence:** grep for `(:Label {` — an unnamed anchor with an inline
+predicate is always this bug. Compare any suspect Cypher against the same query in
+ArcadeDB's native SQL (`SELECT ... FROM Paper WHERE id = ...`); a 100x+ gap means the
+Cypher layer is scanning. See also the note in `stats.py::_rebuild_edge_counts`, which
+is the same engine weakness in a different guise.
+
 ### ArcadeDB semantic search returned zero results on the large corpus
 **2026-07-22, fixed 2026-08-06** | `search/semantic.py`, `LSM_VECTOR` index
 

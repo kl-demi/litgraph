@@ -6,19 +6,22 @@ rice graph; on other databases these all match nothing rather than erroring.
 
 from litgraph.db.neo4j_client import run_read
 
+# The anchor node is named even where the name is unused: ArcadeDB's Cypher layer
+# only resolves an inline key predicate through the index on a *named* node, and
+# full-scans the type otherwise (20s vs 0.1s on a 300k-paper graph).
 _TRAIT = """
 MATCH (t:Trait {trait_id: $id})
 RETURN t.trait_id AS trait_id, t.name AS name, t.source_db AS source_db
 """
 
 _GENES = """
-MATCH (g:Gene)-[r:ASSOCIATED_WITH]->(:Trait {trait_id: $id})
+MATCH (g:Gene)-[r:ASSOCIATED_WITH]->(t:Trait {trait_id: $id})
 RETURN g.gene_id AS gene_id, g.name AS name, r.source_db AS source_db
 ORDER BY g.name LIMIT $limit
 """
 
 _PAPERS = """
-MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:ASSOCIATED_WITH]->(:Trait {trait_id: $id})
+MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:ASSOCIATED_WITH]->(t:Trait {trait_id: $id})
 RETURN pa.id AS id, pa.title AS title, count(DISTINCT g) AS gene_count
 ORDER BY gene_count DESC LIMIT $limit
 """
