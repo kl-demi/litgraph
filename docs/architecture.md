@@ -271,29 +271,20 @@ All source downloads share a retry-with-cache helper, reporting rows dropped as 
 
 ## 8. Identity resolution
 
-Reactome names genes and compounds with identifier schemes that don't match
-`litgraph`'s node keys. A crosswalk resolves one to the other before anything is
-written — an id that doesn't resolve is dropped, never given an invented key.
-
 - **Gene** — Reactome uses NCBI's Entrez Gene id (`ncbigene:<id>`, the `Gene` key). But
-  NCBI's own gene file is indexed by **LocusTag**, a separate systematic id genome
-  annotators assign — so a crosswalk maps LocusTag → Entrez Gene id first.
+  NCBI's own gene file is indexed by **LocusTag**, a separate id scheme, so a crosswalk 
+  from LocusTag to Entrez Gene id is needed.
 - **Compound** — Reactome uses **ChEBI** ids (a chemistry ontology). But `litgraph`'s
-  `Compound` nodes are keyed by **MeSH** id instead, since PubTator3 (§9) normalizes
+  `Compound` nodes are keyed by **MeSH** id, since PubTator3 (§9) normalizes
   chemicals to MeSH. A ChEBI↔MeSH crosswalk bridges the two.
 - **Disease** — Disease Ontology is keyed by **DOID**, but `Disease` nodes are keyed by
   **MeSH** id for the same reason as Compound: PubTator3 normalizes diseases to MeSH.
   DO's `xref` field supplies the mapping, so DOID rides along as an indexed property
-  rather than becoming the key. Keying on DOID would drop every disease DO doesn't map
-  — only ~30% of its live terms carry a MeSH xref (4,013 of 12,247 in the 2026-07-31
-  release), though those cover 62% of the disease mentions PubTator actually produces.
-  Where several DOIDs share one MeSH id, the lexicographically smallest wins, so a
-  re-run is deterministic.
+  rather than becoming the key.
 
-The `IS_A` hierarchy is projected onto MeSH-keyed nodes rather than copied: a DO term
-whose parent carries no MeSH xref is walked further up to its *nearest* mapped
-ancestors. Projecting only edges whose both ends map directly would lose 44% of the
-hierarchy to unmapped intermediate terms (3,380 edges instead of 6,059).
+The `IS_A` hierarchy from Disease Ontology is projected onto MeSH-keyed Disease nodes.
+A DO term whose parent carries no MeSH xref is walked further up to its *nearest* mapped
+ancestors.
 
 ## 9. Entity extraction
 
@@ -332,40 +323,39 @@ SQL/Cypher console that renders results as a graph).
 
 ## 11. GraphStats
 
-`GraphStats {id: 'singleton'}` stores cached statistics for fast serving:
+`GraphStats {id: 'singleton'}` stores cached statistics for quick display:
 
 - **Counters** — papers, stubs, enriched, embedded, authors, categories, the three edge
-  totals, and the published date range. Every write in `graph/upsert.py` updates these,
-  so they stay current on their own.
+  totals, and the published date range. Every write in `graph/upsert.py` updates these
+  automatically.
 - **`edge_endpoints`** — which node types that each edge type joins.
 - **`search_hints`** — the suggestion chips under the search box.
 
-The last two are rebuilt by `litgraph stats cache`, which full-scans. They only go stale
-when a loader starts writing a new kind of edge, or when the corpus shifts enough to
-change which entities are the most-mentioned.
-
-Two ways to read the counters:
-
-- `counters()` — the singleton, and nothing else. One indexed read.
-- `overview()` — the same, plus a top-category lookup and a source breakdown. The
-  breakdown is a full Paper scan, so only the CLI snapshot calls it.
-
-**Careful:** nothing schedules `litgraph stats cache` yet. `rebuild_stats()` calls it,
-but that only runs when someone types `litgraph stats rebuild`. Until it joins the
-nightly ingest, the endpoint pairs and the chips hold whatever they held the last time
-somebody ran it by hand.
+Run the rebuild with `litgraph stats rebuild`, or automate it with a cron job.
 
 ## 12. Pending work
 
-1. Dashboard: an ingestion-status page. Author and Category are the last connected
-   types without a page of their own.
-2. LLM extraction of entities/relationships from paper text, beyond PubTator3/Reactome.
-   Would also let a Gene→Pathway claim carry its own literature evidence — today,
-   `MENTIONS` is literature-backed but `PARTICIPATES_IN`/`PRODUCES` are ontology-backed
-   only, so a pathway query can't tell which kind of evidence it's traversing.
-3. `log_run()` + release-version stamping for bio ingest jobs.
-   `scripts/check_pathway_releases.py` reports the current GO, Reactome and Disease
-   Ontology releases, but nothing records which release a given load came from.
-4. A bridge from ontology edges to a supporting publication — GAF's `DB:Reference`
-   column is one candidate.
-5. Drug-drug interaction from a pharmacological dataset (unscoped).
+1. **Housekeeping**
+
+- Resume daily ingestion (enrich + PubTator + fetch) on the AWS box' crontab. ***Note***: arXiv jobs must run during US daytime to not get blocked (arXiv goes on maintenance at night).
+
+2. **Data ingestion**
+
+- Expand beyond Reactome/GAF for pathway edges (the SPOKE-style curated datasets: DrugBank, STRING, disease ontologies, etc.).
+
+- Close the gap with SPOKE (see last section of `spoke_schema.md`).
+
+3. **LLM extraction / query layer**
+
+- Scope a minimal NL &rarr; Cypher wrapper: can start with a fixed set of query templates (gene &rarr; pathway, author &rarr; papers) before open-ended generation, to avoid Cypher hallucination.
+
+- Scope out literature-backed edge-chain extraction, once there's more pathway coverage.
+
+4. **Frontend**
+
+- Common-search menu (top authors, most-mentioned genes, etc.); we already have the components for this in `search` module.
+- Better graph visualization.
+
+5. **Infra**
+
+- Keep in mind the ArcadeDB OOM checklist and the ~505s index rebuild after restarts.
