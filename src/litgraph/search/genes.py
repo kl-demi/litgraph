@@ -38,9 +38,10 @@ _CO_MENTIONED_GENES = """
 MATCH (g:Gene {gene_id: $gene_id})
 MATCH (p:Paper)-[:MENTIONS]->(g)
 MATCH (p)-[:MENTIONS]->(other:Gene) WHERE other.gene_id <> $gene_id
-RETURN other.gene_id AS gene_id, other.name AS name, count(DISTINCT p) AS shared_papers
+WITH other, count(DISTINCT p) AS shared_papers
 ORDER BY shared_papers DESC
 LIMIT $limit
+RETURN other.gene_id AS gene_id, other.name AS name, shared_papers
 """
 
 

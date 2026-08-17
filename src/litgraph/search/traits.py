@@ -21,9 +21,10 @@ ORDER BY g.name LIMIT $limit
 """
 
 _PAPERS = """
-MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:ASSOCIATED_WITH]->(t:Trait {trait_id: $id})
-RETURN pa.id AS id, pa.title AS title, count(DISTINCT g) AS gene_count
+MATCH (t:Trait {trait_id: $id})<-[:ASSOCIATED_WITH]-(g:Gene)<-[:MENTIONS]-(pa:Paper)
+WITH pa, count(DISTINCT g) AS gene_count
 ORDER BY gene_count DESC LIMIT $limit
+RETURN pa.id AS id, pa.title AS title, gene_count
 """
 
 

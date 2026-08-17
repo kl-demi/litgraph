@@ -10,7 +10,7 @@ WHERE p.is_stub = false
 RETURN count(p) AS paper_count
 """
 
-# `overview()` reads pre-computed counters off a GraphStats singleton, kept in sync
+# `counters()` reads pre-computed figures off a GraphStats singleton, kept in sync
 # incrementally by every write in graph/upsert.py, instead of full-scanning the graph
 # on every call. `rebuild_stats()` recomputes those counters from scratch (the
 # full-scan queries below) — used to bootstrap the singleton on first use, or to
@@ -175,9 +175,10 @@ LIMIT $limit
 
 _TOP_AUTHORS = """
 MATCH (a:Author)-[:AUTHORED]->(p:Paper)
-RETURN a.name AS name, count(p) AS paper_count
+WITH a, count(p) AS paper_count
 ORDER BY paper_count DESC
 LIMIT $limit
+RETURN a.name AS name, paper_count
 """
 
 
@@ -199,17 +200,19 @@ def counters() -> dict:
     return rows[0]
 
 
-def overview() -> dict:
-    """A snapshot of what's in the graph: counts, enrichment coverage, date range.
+def top_category() -> dict | None:
+    """The category holding the most papers, or None if none are counted yet."""
+    rows = run_read(_TOP_CATEGORY)
+    return rows[0] if rows else None
 
-    Adds two live scans to `counters`; the source breakdown is a full Paper scan (21s
-    at 298K papers), so prefer `counters` unless the breakdown is actually shown.
+
+def source_breakdown() -> list[dict]:
+    """Papers and enrichment per source family.
+
+    A full Paper scan -- 21s at 298K papers -- and on a single-source corpus it returns
+    one row restating the total. Worth asking for only on a mixed corpus.
     """
-    top_category_rows = run_read(_TOP_CATEGORY)
-    top_category = top_category_rows[0] if top_category_rows else None
-    by_source = run_read(_SOURCE_BREAKDOWN)
-
-    return {**counters(), "top_category": top_category, "by_source": by_source}
+    return run_read(_SOURCE_BREAKDOWN)
 
 
 def rebuild_stats() -> None:

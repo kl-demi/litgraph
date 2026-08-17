@@ -23,17 +23,17 @@ _SUGGESTION_ORDER = ("Disease", "Trait", "Gene", "Pathway", "Compound", "Organis
 _TOP_BY_MENTIONS = """
 MATCH (p:Paper)-[:MENTIONS]->(n:{label})
 WHERE n.name IS NOT NULL
-RETURN n.name AS name, count(p) AS papers
+WITH n, count(p) AS papers
 ORDER BY papers DESC LIMIT $limit
+RETURN n.name AS name, papers
 """
 
-# Counting incoming relationships rather than size((n)<--()): ArcadeDB's Cypher rejects
-# a pattern expression there outright.
 _TOP_BY_DEGREE = """
 MATCH (n:{label})<-[r]-()
 WHERE n.name IS NOT NULL
-RETURN n.name AS name, count(r) AS papers
+WITH n, count(r) AS papers
 ORDER BY papers DESC LIMIT $limit
+RETURN n.name AS name, papers
 """
 
 

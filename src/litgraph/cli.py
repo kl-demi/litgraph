@@ -350,32 +350,45 @@ def stats_top_authors(n: int = typer.Option(10, "--n", help="Number of authors t
 
 
 @stats_app.command("overview")
-def stats_overview() -> None:
+def stats_overview(
+    sources: bool = typer.Option(
+        False, "--sources", help="Break papers down by source. Full Paper scan, ~20s at 300K."
+    ),
+) -> None:
     """A snapshot of what's in the graph: counts, enrichment coverage, date range."""
-    from litgraph.search.stats import overview
+    from litgraph.search.stats import counters, source_breakdown, top_category
 
-    data = overview()
+    data = counters()
+    by_source = source_breakdown() if sources else []
 
-    def pct(part: int, whole: int) -> str:
+    def pct(part: int | None, whole: int) -> str:
+        # A counter is None when nothing has ever set it -- no enrichment run against
+        # this database -- which is not the same as a measured zero.
+        if part is None:
+            return "not recorded"
         return f"{part} ({part / whole:.0%})" if whole else str(part)
+
+    def num(value: int | None) -> str:
+        return "not recorded" if value is None else str(value)
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold")
     table.add_column()
-    table.add_row("Papers", str(data["papers"]))
+    table.add_row("Papers", num(data["papers"]))
     table.add_row("     enriched (citation data)", pct(data["enriched"], data["papers"]))
     table.add_row("     embedded (semantic search)", pct(data["embedded"], data["papers"]))
-    for row in data["by_source"]:
+    for row in by_source:
         table.add_row(f"     {row['source']}", f"{row['papers']} ingested, {pct(row['enriched'], row['papers'])} enriched")
-    table.add_row("Citation-graph stub papers", str(data["stubs"]))
-    table.add_row("Authors", str(data["authors"]))
-    table.add_row("Categories", str(data["categories"]))
-    if data["top_category"]:
-        table.add_row("     most common", f"{data['top_category']['code']} ({data['top_category']['paper_count']} papers)")
+    table.add_row("Citation-graph stub papers", num(data["stubs"]))
+    table.add_row("Authors", num(data["authors"]))
+    table.add_row("Categories", num(data["categories"]))
+    common = top_category()
+    if common:
+        table.add_row("     most common", f"{common['code']} ({common['paper_count']} papers)")
     table.add_row("Edges")
-    table.add_row("     authored", str(data["authored_edges"]))
-    table.add_row("     in_category", str(data["category_edges"]))
-    table.add_row("     cites", str(data["citation_edges"]))
+    table.add_row("     authored", num(data["authored_edges"]))
+    table.add_row("     in_category", num(data["category_edges"]))
+    table.add_row("     cites", num(data["citation_edges"]))
     if data["earliest_published"] and data["latest_published"]:
         table.add_row("Published date range", f"{data['earliest_published']} → {data['latest_published']}")
 

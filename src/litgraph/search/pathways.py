@@ -25,9 +25,10 @@ ORDER BY c.name LIMIT $limit
 # Papers reach a pathway only through the genes they mention; the ones touching the
 # most of its genes come first, as the strongest evidence for the pathway as a whole.
 _PAPERS = """
-MATCH (pa:Paper)-[:MENTIONS]->(g:Gene)-[:PARTICIPATES_IN]->(pw:Pathway {pathway_id: $id})
-RETURN pa.id AS id, pa.title AS title, count(DISTINCT g) AS gene_count
+MATCH (pw:Pathway {pathway_id: $id})<-[:PARTICIPATES_IN]-(g:Gene)<-[:MENTIONS]-(pa:Paper)
+WITH pa, count(DISTINCT g) AS gene_count
 ORDER BY gene_count DESC LIMIT $limit
+RETURN pa.id AS id, pa.title AS title, gene_count
 """
 
 

@@ -21,8 +21,9 @@ LIMIT $limit
 _GENES = """
 MATCH (p:Paper)-[:MENTIONS]->(o:Organism {taxon_id: $id})
 MATCH (p)-[:MENTIONS]->(g:Gene)
-RETURN g.gene_id AS gene_id, g.name AS name, count(DISTINCT p) AS shared_papers
+WITH g, count(DISTINCT p) AS shared_papers
 ORDER BY shared_papers DESC LIMIT $limit
+RETURN g.gene_id AS gene_id, g.name AS name, shared_papers
 """
 
 
